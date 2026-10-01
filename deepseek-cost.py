@@ -14,8 +14,11 @@ fetched from the internet (two machine-readable mirrors of the yearly notice,
 cross-checked), never typed in by hand; --refresh-holidays re-fetches them
 and rewrites the list in this file.  A session start also visits the
 internet once every two weeks (--check-online): DeepSeek's own pricing page,
-to see whether the rates or the peak-hours wording changed, and the holiday
-mirrors; rates that changed are applied from the page automatically.
+to see whether the rates or the peak-hours wording changed, the holiday
+mirrors, and the repo's version.txt; rates that changed are applied from
+the page automatically, and a newer release is reported so the copy can be
+updated (git pull && python3 install.py).  The statusline ends with the
+version this copy carries.
 
     USD per 1M tokens, peak rates:
         deepseek-flash     cache hit 0.006   cache miss 0.30   output 1.20
@@ -40,6 +43,7 @@ line of ~/.config/claude-deepseek/key.env (everything after the first =).
     deepseek-cost.py --welcome # SessionStart hook payload: balance/spend/tier
     deepseek-cost.py --refresh-holidays [--dry-run]  # re-fetch the holiday days
     deepseek-cost.py --check-online    # re-check rates + holidays right now
+    deepseek-cost.py --version # the version this copy carries, e.g. v1.0
 """
 import argparse
 import glob
@@ -47,8 +51,19 @@ import hashlib
 import json
 import os
 import re
+import threading
+import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
+
+try:
+    import fcntl                        # POSIX file locks for the state file
+except ImportError:                     # Windows
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:                 # nothing to lock with; writes degrade
+        msvcrt = None
 
 PRICES_PEAK = {
     "deepseek-flash": (0.006 / 1e6, 0.30 / 1e6, 1.20 / 1e6),   # hit, miss, out
@@ -60,6 +75,8 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash": "deepseek-flash",
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
+
+VERSION = "1.0"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday
@@ -95,7 +112,23 @@ HOLIDAYS = {  # days off; refreshed 2026-10-01 via --refresh-holidays
 
 STATE_FILE = os.path.expanduser("~/.claude/deepseek-online.json")
 PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing"
+VERSION_URLS = (                    # where the repo's version.txt lives:
+    "https://cdn.jsdelivr.net/gh/hardtomakeanadress/claude-code-deepseek-cost@main/version.txt",
+    "https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/version.txt",
+)                                   # CDN first (reachable from China), raw second
 CHECK_EVERY = timedelta(days=14)     # how often "once in a while" is
+CHECK_BUDGET = 12                    # seconds a visit's network work may take
+                                     # in total - every request is capped by
+                                     # the time left, so a black-holing host
+                                     # cannot stack timeouts past it; the hook
+                                     # that runs it is killed at 30
+WELCOME_BUDGET = 20                  # seconds the whole session-start line may
+                                     # spend on the internet (the visit above
+                                     # plus the balance lookup)
+VERSION_RE = re.compile(r"\d{1,4}(?:\.\d{1,4}){0,7}")
+                                     # what a version looks like: components
+                                     # capped so int() (in _newer) can never
+                                     # be handed an absurd digit run
 
 # The peak-hours sentence this file bills by (read off DeepSeek's page
 # 2026-10-01).  check_online warns when the page stops saying exactly this;
@@ -222,21 +255,141 @@ def years_note(years):
             for year in years if year not in known]
 
 
+def update_note():
+    """A short note when the last visit saw a newer version in the repo.
+
+    Reads the version the online check recorded; empty while this copy is
+    current (or when no visit has found the repo's version.txt yet).
+    """
+    latest = _valid_version(_read_state().get("latest"))
+    if not latest:
+        return ""
+    try:
+        newer = _newer(latest, VERSION)
+    except ValueError:               # defensive; _valid_version has already
+        return ""                    # bounded whatever reaches int()
+    if not newer:
+        return ""
+    return f"⬆ v{latest} on GitHub - git pull && python3 install.py"
+
+
 class HolidaySourceError(Exception):
     """No usable, agreeing answer from the holiday sources."""
 
 
+_DEADLINE = None            # monotonic clock reading a network-using command
+                            # must be done by; set by check_online() and
+                            # welcome(), None outside a visit
+
+
+def _remaining(cap):
+    """Seconds one request may take: its cap, or less near a visit's end.
+
+    With _DEADLINE set, no single request can outlive the visit's budget,
+    so a host that black-holes connections cannot stack its timeout on
+    top of the ones before it.
+    """
+    if _DEADLINE is None:
+        return cap
+    return max(0.0, min(cap, _DEADLINE - time.monotonic()))
+
+
+def _fetch(url, headers, cap):
+    """One HTTP GET that cannot outlive its cap, whatever the socket does.
+
+    urlopen's timeout bounds a single connection attempt, and a host with
+    several addresses quietly multiplies it; a slow body stretches it
+    further.  So the request runs in a daemon thread that is abandoned
+    when the time is up - the call returns on schedule even if a socket
+    underneath it keeps trying.  Every failure comes out as OSError.
+    """
+    seconds = _remaining(cap)
+    if seconds <= 0:
+        raise OSError("out of time for this visit")
+    outcome = {}
+
+    def attempt():
+        try:
+            request = urllib.request.Request(
+                url, headers={"User-Agent": "claude-code-deepseek-cost",
+                              **headers})
+            with urllib.request.urlopen(request, timeout=seconds) as response:
+                outcome["body"] = response.read()
+        except Exception as problem:      # re-raised in the main thread
+            outcome["problem"] = problem
+
+    worker = threading.Thread(target=attempt, daemon=True)
+    worker.start()
+    worker.join(_remaining(cap))     # fresh: startup time is already spent
+    if worker.is_alive():
+        raise OSError("no answer within the visit's budget")
+    problem = outcome.get("problem")
+    if problem is None:
+        return outcome["body"]
+    if isinstance(problem, OSError):      # includes timeouts and resets
+        raise problem
+    raise OSError(str(problem)) from problem
+
+
 def _get_text(url):
-    """Fetch one URL and return the body as text."""
-    request = urllib.request.Request(
-        url, headers={"User-Agent": "claude-code-deepseek-cost"})
-    with urllib.request.urlopen(request, timeout=4) as response:
-        return response.read().decode("utf-8", "replace")
+    """Fetch one URL and return the body as text, 4 seconds at most."""
+    return _fetch(url, {}, 4).decode("utf-8", "replace")
 
 
 def _get_json(url):
     """Fetch one URL and parse the body as JSON."""
     return json.loads(_get_text(url))
+
+
+def _newer(left, right):
+    """True when version string left is numerically newer than right.
+
+    Components compare numerically with missing ones as zero, so '1.0'
+    equals '1.0.0' and '1.0.0.0.1' beats both; a string with no number at
+    all is never newer.
+    """
+    newer = [int(part) for part in re.findall(r"\d+", left or "")]
+    mine = [int(part) for part in re.findall(r"\d+", right or "")]
+    if not newer:
+        return False
+    width = max(len(newer), len(mine))
+    return (newer + [0] * (width - len(newer))
+            > mine + [0] * (width - len(mine)))
+
+
+def _valid_version(value):
+    """A version string from the state file, or None when it isn't one.
+
+    Cached values are as untrusted as remote ones: a hand-mangled state
+    file must not reach _newer() - or a terminal - as-is.
+    """
+    return value if (isinstance(value, str)
+                     and VERSION_RE.fullmatch(value)) else None
+
+
+def _read_time(value):
+    """A timestamp from the state file; the distant past when unusable."""
+    try:
+        when = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=timezone.utc)
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def fetch_latest_version():
+    """The version the repo carries, or None when it can't be read.
+
+    Any failure just means no news this time; nothing about the local
+    pricing or the check's schedule depends on it.
+    """
+    for url in VERSION_URLS:
+        try:
+            text = _get_text(url).strip()
+        except OSError:
+            continue
+        if VERSION_RE.fullmatch(text):      # digits capped, int() can't choke
+            return text
+    return None
 
 
 def _holidays_holiday_cn(year):
@@ -259,6 +412,8 @@ def _holidays_timor(year):
     url = "https://timor.tech/api/holiday/year/%d" % year
     try:
         data = _get_json(url)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
         if data.get("code") != 0:
             raise ValueError("code %r" % data.get("code"))
         holiday = data.get("holiday")
@@ -299,14 +454,80 @@ def fetch_holidays(year):
 
 
 def _write_state(state):
-    """Persist the check state; best effort, never fatal."""
+    """Persist the check state; best effort, never fatal.
+
+    The scratch name is per-process, so two sessions visiting at the same
+    time cannot write through each other's half-written file.
+    """
+    scratch = f"{STATE_FILE}.{os.getpid()}.tmp"
     try:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-        with open(STATE_FILE + ".tmp", "w", encoding="utf-8") as handle:
+        with open(scratch, "w", encoding="utf-8") as handle:
             json.dump(state, handle, indent=1, sort_keys=True)
-        os.replace(STATE_FILE + ".tmp", STATE_FILE)
+        os.replace(scratch, STATE_FILE)
     except OSError:
         pass
+
+
+def _lock_acquire(handle):
+    """Take the state lock, non-blocking; OSError while someone holds it."""
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        handle.seek(0)                   # msvcrt locks from the position
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _lock_release(handle):
+    """Let the state lock go (only called after a successful acquire)."""
+    if fcntl is not None:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    else:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+def _write_state_merged(fold):
+    """Read the state, let fold() layer this visit's findings over it, write.
+
+    Two sessions can start together and both visit; a kernel lock on the
+    lock file keeps them from reading the same old copy and overwriting
+    each other's findings.  The kernel drops the lock when the process
+    ends - a killed session cannot leave it stale, so nothing ever needs
+    cleaning up and two processes cannot race to clean it.  A lock still
+    held after half a second of tries only degrades this to a plain
+    read-merge-write - it never blocks a session start.
+    """
+    handle = None
+    locked = False
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        handle = open(STATE_FILE + ".lock", "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")          # msvcrt needs a byte to lock
+            handle.flush()
+        for _ in range(20):              # half a second at most
+            try:
+                _lock_acquire(handle)
+                locked = True
+                break
+            except OSError:
+                time.sleep(0.025)
+    except OSError:                      # no lock here; write anyway
+        if handle is not None:
+            handle.close()
+        handle = None
+    try:
+        _write_state(fold(_read_state()))
+    finally:
+        if handle is not None:
+            if locked:
+                try:
+                    _lock_release(handle)
+                except OSError:
+                    pass
+            handle.close()
 
 
 def _strip_html(text):
@@ -387,8 +608,11 @@ def check_online(now=None, force=False):
 
     Due every CHECK_EVERY days, and at once on a fresh install; a visit
     that couldn't finish (network down, a source silent) retries the next
-    day rather than on every session start; --check-online forces one.  It
-    reads DeepSeek's own pricing page - changed rates are applied from
+    day rather than on every session start; --check-online forces one.  Every
+    request a visit makes is capped by the time left of CHECK_BUDGET, and
+    welcome() wraps this and the balance lookup in one WELCOME_BUDGET, so a
+    black-holing host cannot stack timeouts past the hook's 30-second kill.
+    It reads DeepSeek's own pricing page - changed rates are applied from
     there, since they are the authority on their prices; a peak-hours rule
     that no longer says what this file was built on is only reported, since
     moving the windows is a person's call.  Then it re-fetches the holiday
@@ -405,77 +629,140 @@ def check_online(now=None, force=False):
         return []
     notes = []
     completed = True
-
-    # --- DeepSeek's own pricing page ---------------------------------------
+    read_pricing = False
+    global _DEADLINE
+    previous = _DEADLINE
+    deadline = time.monotonic() + CHECK_BUDGET
+    if previous is not None:             # nested in welcome(): tighter wins
+        deadline = min(deadline, previous)
+    _DEADLINE = deadline
     try:
-        page = _get_text(PRICING_URL)
-    except OSError:
-        completed = False                # transient; retried tomorrow
-    else:
+
+        # --- DeepSeek's own pricing page ---------------------------------------
         try:
-            rates, off_peak, rule = _parse_pricing(page)
-        except ValueError:
-            notes.append("DeepSeek's pricing page changed and the rates "
-                         "couldn't be read - check PRICES_PEAK")
+            page = _get_text(PRICING_URL)
+        except OSError:
+            completed = False                # transient; retried tomorrow
         else:
-            unreadable = ("deepseek-flash" not in rates
-                          or any(not 0 < hit <= miss <= out
-                                 for hit, miss, out in rates.values()))
-            ratio = [model for model, triplet in rates.items()
-                     if any(abs(off_peak[model][index] * 2 - triplet[index])
-                            > triplet[index] * 1e-9 for index in (0, 1, 2))]
-            if unreadable:
+            try:
+                rates, off_peak, rule = _parse_pricing(page)
+            except ValueError:
                 notes.append("DeepSeek's pricing page changed and the rates "
                              "couldn't be read - check PRICES_PEAK")
-            elif ratio:
-                notes.append("DeepSeek's off-peak prices no longer look like "
-                             "exactly half - check the factor in response_cost")
             else:
-                before = {model: PRICES_PEAK.get(model) for model in rates}
-                PRICES_PEAK.update(rates)
-                applied = [model for model in rates
-                           if before[model] != rates[model]]
-                was_rule, was_rates = state.get("rule"), state.get("rates")
-                if applied and (was_rates is None or rates != was_rates):
-                    model = ("deepseek-flash" if "deepseek-flash" in applied
-                             else sorted(applied)[0])
-                    change = (f" miss ${before[model][1] * 1e6:g} -> "
-                              f"${rates[model][1] * 1e6:g}"
-                              if before[model] else "")
-                    more = (f" (+{len(applied) - 1} more)"
-                            if len(applied) > 1 else "")
-                    notes.append(f"rates updated from DeepSeek's page: "
-                                 f"{model}{change}{more}")
-                if rule != (was_rule or PEAK_RULE):
-                    notes.append("DeepSeek rewrote the peak-hours rule - "
-                                 "check the windows in deepseek-cost.py")
-                state["rates"] = rates
-                state["rule"] = rule
+                unreadable = ("deepseek-flash" not in rates
+                              or any(not 0 < hit <= miss <= out
+                                     for hit, miss, out in rates.values()))
+                ratio = [model for model, triplet in rates.items()
+                         if any(abs(off_peak[model][index] * 2 - triplet[index])
+                                > triplet[index] * 1e-9 for index in (0, 1, 2))]
+                if unreadable:
+                    notes.append("DeepSeek's pricing page changed and the rates "
+                                 "couldn't be read - check PRICES_PEAK")
+                elif ratio:
+                    notes.append("DeepSeek's off-peak prices no longer look like "
+                                 "exactly half - check the factor in response_cost")
+                else:
+                    read_pricing = True
+                    before = {model: PRICES_PEAK.get(model) for model in rates}
+                    PRICES_PEAK.update(rates)
+                    applied = [model for model in rates
+                               if before[model] != rates[model]]
+                    was_rule, was_rates = state.get("rule"), state.get("rates")
+                    if applied and (was_rates is None or rates != was_rates):
+                        model = ("deepseek-flash" if "deepseek-flash" in applied
+                                 else sorted(applied)[0])
+                        change = (f" miss ${before[model][1] * 1e6:g} -> "
+                                  f"${rates[model][1] * 1e6:g}"
+                                  if before[model] else "")
+                        more = (f" (+{len(applied) - 1} more)"
+                                if len(applied) > 1 else "")
+                        notes.append(f"rates updated from DeepSeek's page: "
+                                     f"{model}{change}{more}")
+                    if rule != (was_rule or PEAK_RULE):
+                        notes.append("DeepSeek rewrote the peak-hours rule - "
+                                     "check the windows in deepseek-cost.py")
+                    state["rates"] = rates
+                    state["rule"] = rule
+                    state["rates_at"] = datetime.now(timezone.utc).isoformat()
 
-    # --- holiday mirrors ---------------------------------------------------
-    fresh = set()
-    for year in (now.year, now.year + 1):
-        try:
-            days, _ = fetch_holidays(year)
-        except HolidaySourceError:
-            if year == now.year:
-                completed = False
-            continue                   # next year: just not published yet
-        known = {day for day in HOLIDAYS if day.startswith(str(year))}
-        if known and known != days:
-            notes.append(f"holiday days for {year} changed at the sources - "
-                         "run --refresh-holidays")
-        fresh |= days
-    if fresh:
-        HOLIDAYS.update(fresh)
-        kept = state.get("days")
-        kept = kept if isinstance(kept, list) else []
-        state["days"] = sorted({day for day in kept if isinstance(day, str)}
-                               | fresh)
-    state["next_check"] = (
-        now + (CHECK_EVERY if completed else timedelta(days=1))).isoformat()
-    _write_state(state)
-    return notes
+        # --- holiday mirrors ---------------------------------------------------
+        fresh = set()
+        for year in (now.year, now.year + 1):
+            if time.monotonic() > deadline:
+                if year == now.year:
+                    completed = False         # out of time; look again tomorrow
+                break
+            try:
+                days, _ = fetch_holidays(year)
+            except HolidaySourceError:
+                if year == now.year:
+                    completed = False
+                continue                   # next year: just not published yet
+            known = {day for day in HOLIDAYS if day.startswith(str(year))}
+            if known and known != days:
+                notes.append(f"holiday days for {year} changed at the sources - "
+                             "run --refresh-holidays")
+            fresh |= days
+        if fresh:
+            HOLIDAYS.update(fresh)
+            kept = state.get("days")
+            kept = kept if isinstance(kept, list) else []
+            state["days"] = sorted({day for day in kept if isinstance(day, str)}
+                                   | fresh)
+
+        # --- the repo's version ------------------------------------------------
+        latest = None if time.monotonic() > deadline else fetch_latest_version()
+        if latest:
+            state["latest"] = latest
+        state["next_check"] = (
+            now + (CHECK_EVERY if completed else timedelta(days=1))).isoformat()
+        # Two sessions can start together and both visit; fold in whatever the
+        # other one found rather than overwriting it with this older snapshot.
+        def fold(disk):
+            """This visit's findings over what is on disk now."""
+            if not read_pricing:                 # nothing here to vouch for
+                for field in ("rates", "rule", "rates_at"):
+                    if field in disk:
+                        state[field] = disk[field]
+                    else:
+                        state.pop(field, None)
+                PRICES_PEAK.update(_state_rates(disk))   # cost by what's stored
+            elif (isinstance(disk.get("rates"), dict)
+                  and _read_time(disk.get("rates_at")) > _read_time(state.get("rates_at"))):
+                # the other session read the page after we did
+                for field in ("rates", "rule", "rates_at"):
+                    if field in disk:                          # a half-written record
+                        state[field] = disk[field]             # must not abort this
+                PRICES_PEAK.update(_state_rates(disk))
+            their_days = disk.get("days")
+            if isinstance(their_days, list):
+                mine_days = state.get("days")
+                mine_days = mine_days if isinstance(mine_days, list) else []
+                state["days"] = sorted({day for day in mine_days if isinstance(day, str)}
+                                       | {day for day in their_days
+                                          if isinstance(day, str)})
+            elif not isinstance(state.get("days"), list):
+                state.pop("days", None)          # junk carried in the snapshot
+            their_latest = _valid_version(disk.get("latest"))
+            mine = _valid_version(state.get("latest"))
+            if their_latest and (not mine or _newer(their_latest, mine)):
+                state["latest"] = their_latest
+            elif not mine:
+                state.pop("latest", None)        # junk carried in the snapshot
+            try:
+                theirs = datetime.fromisoformat(disk["next_check"])
+                mine_when = datetime.fromisoformat(state["next_check"])
+                if theirs < mine_when and theirs > now:   # a live retry stamp; one in
+                    state["next_check"] = disk["next_check"]   # the past must not stick
+            except (KeyError, TypeError, ValueError):
+                pass
+            return state
+
+        _write_state_merged(fold)
+        return notes
+    finally:
+        _DEADLINE = previous
 
 
 def check_online_command():
@@ -488,6 +775,9 @@ def check_online_command():
         print(f"  {model}: peak hit ${hit * 1e6:g} miss ${miss * 1e6:g} "
               f"out ${out * 1e6:g} per 1M")
     print(f"  rule seen: {state.get('rule') or '(not read)'}")
+    latest = _valid_version(state.get("latest"))
+    print(f"  version: v{VERSION}"
+          + (f"   latest on GitHub: v{latest}" if latest else ""))
     days = _state_days(state)
     print(f"  holiday days kept: {len(days)} beyond the built-in list")
     print(f"  next check: {state.get('next_check', '(unknown)')}")
@@ -739,13 +1029,11 @@ def fetch_balance():
             return None
     if not key:
         return None
-    request = urllib.request.Request(
-        "https://api.deepseek.com/user/balance",
-        headers={"Authorization": f"Bearer {key}"})
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            return float(json.load(response)["balance_infos"][0]["total_balance"])
-    except (OSError, ValueError, KeyError, IndexError):
+        body = _fetch("https://api.deepseek.com/user/balance",
+                      {"Authorization": f"Bearer {key}"}, 10)
+        return float(json.loads(body)["balance_infos"][0]["total_balance"])
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
         return None
 
 
@@ -767,23 +1055,33 @@ def billing_model():
 
 def welcome():
     """SessionStart hook payload: model, balance, all-time spend, tier."""
-    try:
-        notes = check_online()        # the "once in a while" internet visit
-    except Exception:                 # a hook must never break session start
-        notes = []
-    base = os.path.expanduser("~/.claude/projects")
-    try:
-        spent = report(sorted(glob.glob(os.path.join(base, "**", "*.jsonl"),
-                                        recursive=True)))["total"]["usd"]
-        spent_text = f"${spent:.2f} spent so far"
-    except (OSError, ValueError):
-        spent_text = "spend unavailable"
-    balance = fetch_balance()
+    global _DEADLINE
+    previous = _DEADLINE
+    end = time.monotonic() + WELCOME_BUDGET         # one envelope over every
+    _DEADLINE = end if previous is None else min(previous, end)
+    try:                                            # network call below
+        try:
+            notes = check_online()    # the "once in a while" internet visit
+        except Exception:             # a hook must never break session start
+            notes = []
+        base = os.path.expanduser("~/.claude/projects")
+        try:
+            spent = report(sorted(glob.glob(os.path.join(base, "**", "*.jsonl"),
+                                            recursive=True)))["total"]["usd"]
+            spent_text = f"${spent:.2f} spent so far"
+        except (OSError, ValueError):
+            spent_text = "spend unavailable"
+        balance = fetch_balance()
+    finally:
+        _DEADLINE = previous
     left = f"${balance:.2f} left" if balance is not None else "balance unavailable"
     line = f"{billing_model()} — {left} · {spent_text} · {tier_line()}"
     for note in notes:
         line += f" · {note}"
     note = holiday_note(short=True)
+    if note:
+        line += f" · {note}"
+    note = update_note()
     if note:
         line += f" · {note}"
     print(json.dumps({
@@ -858,11 +1156,16 @@ def main():
                         help="re-check DeepSeek's pricing page and the holiday "
                              "sources right now (normally every %d days from "
                              "--welcome)" % CHECK_EVERY.days)
+    parser.add_argument("--version", action="store_true",
+                        help="print the version this copy carries, e.g. v1.0")
     args = parser.parse_args()
     if args.refresh_holidays:
         raise SystemExit(refresh_holidays_command(dry_run=args.dry_run))
     if args.check_online:
         raise SystemExit(check_online_command())
+    if args.version:
+        print(f"v{VERSION}")
+        return
     if args.tier:
         print(tier_line())
         return

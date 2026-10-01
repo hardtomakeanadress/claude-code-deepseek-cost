@@ -14,6 +14,9 @@
 # (off-peak, half price - green) or peak (red) right now, and when
 # that changes.
 
+# The line ends with the version of ~/.claude/deepseek-cost.py it was
+# rendered with, e.g. · v1.0.
+
 # The decimal point has to be a point. On a machine whose locale writes
 # decimals with a comma, printf "%.2f" refuses the number outright and the
 # cost comes out as garbage, so the locale is pinned before anything is
@@ -89,6 +92,14 @@ if [ -n "$tier" ]; then
     tier_part=" ${tier_col}${tier}${off}"
 fi
 
+# --- version -----------------------------------------------------------------
+# Which deepseek-cost.py this line came from; helps when reporting bugs.
+version=$(python3 "$HOME/.claude/deepseek-cost.py" --version 2>/dev/null)
+ver_part=""
+if [ -n "$version" ]; then
+    ver_part=" ${dim}· ${version}${off}"
+fi
+
 # --- how long ---------------------------------------------------------------
 elapsed=""
 if [ -n "$dur" ]; then
@@ -100,9 +111,9 @@ if [ -n "$dur" ]; then
     fi
 fi
 
-printf '%s%s%s %s·%s %s%s%s%s%s%s%s%s\n' \
+printf '%s%s%s %s·%s %s%s%s%s%s%s%s%s%s\n' \
     "$cyan" "$model" "$off" \
     "$dim" "$off" \
     "$dim" "$folder" "$off" \
     "$meter" "$dim" "$money$elapsed" "$off" \
-    "$tier_part"
+    "$tier_part" "$ver_part"

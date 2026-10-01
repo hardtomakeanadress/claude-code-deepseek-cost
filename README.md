@@ -16,18 +16,22 @@ bash, no jq. Runs on Linux, macOS, and Windows (WSL, Git Bash, or PowerShell).
 **Live statusline**, redrawn continuously while you work:
 
 ```
-deepseek-flash · /home/you/project ███████░░░ 71% $0.17 24m ▽ cheap · 162h16m left
+deepseek-flash · /home/you/project ███████░░░ 71% $0.17 24m ▽ cheap · 162h16m left · v1.0
 ```
 
 model · working folder · context-window meter · this session's DeepSeek cost ·
 time in the session · billing tier — green `▽ cheap` or red `▲ peak`, with the
-time left in the current window.
+time left in the current window — and the version you run, so a screenshot or
+bug report says which copy it was.
 
 **Session-start cost check** — one line when a chat starts, resumes, or clears:
 
 ```
 deepseek-flash — $18.42 left · $6.58 spent so far · ▽ cheap · 162h42m left
 ```
+
+…and when the two-weekly check has seen a newer release in the repo, it
+carries `· ⬆ v1.2 on GitHub - git pull && python3 install.py` until you update.
 
 **Report CLI** — re-price any transcript, one project, or everything
 (example output):
@@ -87,6 +91,9 @@ No API calls needed:
 python3 ~/.claude/deepseek-cost.py --tier
 # ▽ cheap · 162h42m left      (or: ▲ peak · 2h10m left)
 
+python3 ~/.claude/deepseek-cost.py --version
+# v1.0
+
 python3 ~/.claude/deepseek-cost.py --transcript examples/sample.jsonl --report
 # total $0.0005 over 1 response (0 rows skipped: model not on the card)
 #   peak $0.0000 (0 req)   off-peak $0.0005 (1 req)
@@ -143,6 +150,13 @@ through PowerShell when it is not — this works under either, but note:
   behind the calendar, the session-start line and reports say so
   (`⚠ holidays end 2026 – run --refresh-holidays`) — the meter itself only
   ever shows the tier and the time left.
+- **Updates** — the statusline ends with the version you run (`· v1.0`). The
+  same two-weekly visit that checks prices reads `version.txt` from this
+  repo — the jsDelivr CDN first (reachable from China), GitHub raw second —
+  and once it sees a newer version, every session-start line carries
+  `⬆ v1.2 on GitHub - git pull && python3 install.py` until you update. The
+  check is quiet when offline and never touches the meter. Releasing a
+  version: bump `VERSION` in `deepseek-cost.py` and `version.txt` together.
 
 ## How the costing works
 
@@ -186,6 +200,7 @@ deepseek-cost.py --tier                                # e.g. "▽ cheap · 162h
 deepseek-cost.py --welcome                             # SessionStart hook JSON payload
 deepseek-cost.py --refresh-holidays [--dry-run]        # update the holiday list
 deepseek-cost.py --check-online                        # re-check rates and holidays now
+deepseek-cost.py --version                             # e.g. v1.0
 ```
 
 ## Troubleshooting

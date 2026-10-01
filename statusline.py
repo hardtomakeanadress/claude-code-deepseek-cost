@@ -14,6 +14,9 @@ its timestamp. It is an estimate, not a bill.
 The trailing marker is DeepSeek's billing tier right now: green ▽ cheap
 (off-peak, half price) or red ▲ peak, with the time left in that window.
 That is all the marker says - deliberately.
+
+The line ends with the version of the deepseek-cost.py sitting next to it
+(· v1.0), so a bug report can say which copy it came from.
 """
 import importlib.util
 import json
@@ -99,6 +102,16 @@ def tier_part(costs):
     return f" {colour}{tier}{OFF}"
 
 
+def version_part(costs):
+    if costs is None:
+        return ""
+    try:
+        version = costs.VERSION
+    except AttributeError:             # an older deepseek-cost.py without one
+        return ""
+    return f" {DIM}· v{version}{OFF}"
+
+
 def main():
     try:
         data = json.load(sys.stdin)
@@ -119,7 +132,7 @@ def main():
           f"{DIM}{folder}{OFF}"
           f"{meter_part(data)}"
           f"{DIM}{money_part(data, costs)}{elapsed_part(data)}{OFF}"
-          f"{tier_part(costs)}")
+          f"{tier_part(costs)}{version_part(costs)}")
 
 
 if __name__ == "__main__":
