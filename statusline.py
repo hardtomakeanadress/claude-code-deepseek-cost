@@ -13,6 +13,7 @@ its timestamp. It is an estimate, not a bill.
 
 The trailing marker is DeepSeek's billing tier right now: green ▽ cheap
 (off-peak, half price) or red ▲ peak, with the time left in that window.
+That is all the marker says - deliberately.
 """
 import importlib.util
 import json

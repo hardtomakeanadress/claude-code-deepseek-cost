@@ -101,7 +101,8 @@ echo '{"model":{"display_name":"deepseek-flash"},"workspace":{"current_dir":"/tm
 response ($0.000456, shown as $0.0005). Its two rows carry the same message id
 with growing token counts — exactly how Claude Code records a streamed reply —
 and the report collapses them into a single, larger response: a broken dedupe
-would print 2 responses.
+would print 2 responses. (On a year the holiday list doesn't cover yet, the
+report also prints a `note:` line until the list is refreshed — expected.)
 
 ## Windows
 
@@ -125,7 +126,10 @@ through PowerShell when it is not — this works under either, but note:
 - **Prices and holidays** — when DeepSeek changes rates, edit `PRICES_PEAK` at
   the top of `deepseek-cost.py` (retired model names map through `ALIASES`).
   The `HOLIDAYS` set holds the 2026 Chinese public holidays (State Council
-  notice); refresh it when the next notice is published.
+  notice); refresh it when the next notice is published. If the list ever
+  falls behind the calendar, the session-start line and reports say so
+  (`⚠ holiday list ends 2026`) — the meter itself only ever shows the tier
+  and the time left.
 
 ## How the costing works
 

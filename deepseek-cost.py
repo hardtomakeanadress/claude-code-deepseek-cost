@@ -95,6 +95,24 @@ def tier_line(now=None):
     return f"{mark} {label} · {left} left"
 
 
+def holiday_note(short=False, now=None):
+    """A warning when the holiday list no longer covers the current year.
+
+    The list is a snapshot. Once the calendar year passes its last entry, a
+    holiday it doesn't know would be priced - and marked - as peak on a day
+    DeepSeek bills off-peak, so every surface says so rather than being
+    quietly wrong. Empty while the list is current.
+    """
+    now = now or datetime.now(timezone.utc)
+    years = sorted({day[:4] for day in HOLIDAYS})
+    if not years or now.year <= int(years[-1]):
+        return ""
+    if short:
+        return f"⚠ holiday list ends {years[-1]}"
+    return (f"holiday list ends in {years[-1]} - Chinese holidays after that "
+            "get counted as peak; refresh HOLIDAYS in deepseek-cost.py")
+
+
 def response_cost(model, ts, miss, hit, out):
     """USD for one API response, or None when the model has no price card."""
     card = PRICES_PEAK.get(ALIASES.get(model, model))
@@ -276,6 +294,9 @@ def welcome():
     balance = fetch_balance()
     left = f"${balance:.2f} left" if balance is not None else "balance unavailable"
     line = f"{billing_model()} — {left} · {spent_text} · {tier_line()}"
+    note = holiday_note(short=True)
+    if note:
+        line += f" · {note}"
     print(json.dumps({
         "systemMessage": line,
         "hookSpecificOutput": {
@@ -349,6 +370,9 @@ def main():
           f"({total['unknown_models']} rows skipped: model not on the card)")
     print(f"  peak ${total['peak_usd']:.4f} ({total['peak_requests']} req)   "
           f"off-peak ${total['off_peak_usd']:.4f} ({total['off_peak_requests']} req)")
+    note = holiday_note()
+    if note:
+        print(f"  note: {note}")
     print(f"  tokens: miss {total['miss_tokens']:,}  hit {total['hit_tokens']:,}"
           f"  out {total['out_tokens']:,}")
     merged = out["duplicate_responses_merged"]
