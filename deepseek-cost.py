@@ -21,6 +21,9 @@ Notes on the accounting:
     streamed; the largest counts seen for an id are used, so every API
     response is priced exactly once
 
+The balance lookup reads $DEEPSEEK_API_KEY when set, otherwise the first
+line of ~/.config/claude-deepseek/key.env (everything after the first =).
+
     deepseek-cost.py --transcript t.jsonl [--transcript ...]   # USD on stdout
     deepseek-cost.py --transcript t.jsonl --report             # human table
     deepseek-cost.py --transcript t.jsonl --report --json      # machine table
@@ -221,11 +224,19 @@ def report(paths):
 
 
 def fetch_balance():
-    """USD left on the DeepSeek account, or None when it can't be read."""
-    try:
-        with open(os.path.expanduser("~/.config/claude-deepseek/key.env")) as handle:
-            key = handle.readline().split("=", 1)[1].strip()
-    except (OSError, IndexError):
+    """USD left on the DeepSeek account, or None when it can't be read.
+
+    The key comes from $DEEPSEEK_API_KEY when set, otherwise from the first
+    line of ~/.config/claude-deepseek/key.env (everything after the first =).
+    """
+    key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not key:
+        try:
+            with open(os.path.expanduser("~/.config/claude-deepseek/key.env")) as handle:
+                key = handle.readline().split("=", 1)[1].strip()
+        except (OSError, IndexError):
+            return None
+    if not key:
         return None
     request = urllib.request.Request(
         "https://api.deepseek.com/user/balance",
@@ -238,7 +249,14 @@ def fetch_balance():
 
 
 def billing_model():
-    """The model Claude Code is pointed at, per the DeepSeek router config."""
+    """The model Claude Code is pointed at.
+
+    $ANTHROPIC_MODEL wins when set - that is what a running session actually
+    uses - then the claude-deepseek router config, then a plain guess.
+    """
+    model = os.environ.get("ANTHROPIC_MODEL", "").strip()
+    if model:
+        return model
     try:
         with open(os.path.expanduser("~/.config/claude-deepseek/settings.json")) as handle:
             return json.load(handle)["env"]["ANTHROPIC_MODEL"]
@@ -326,13 +344,16 @@ def main():
         print(json.dumps(out, indent=1))
         return
     total = out["total"]
-    print(f"total ${total['usd']:.4f} over {total['requests']} responses "
+    plural = "" if total["requests"] == 1 else "s"
+    print(f"total ${total['usd']:.4f} over {total['requests']} response{plural} "
           f"({total['unknown_models']} rows skipped: model not on the card)")
     print(f"  peak ${total['peak_usd']:.4f} ({total['peak_requests']} req)   "
           f"off-peak ${total['off_peak_usd']:.4f} ({total['off_peak_requests']} req)")
     print(f"  tokens: miss {total['miss_tokens']:,}  hit {total['hit_tokens']:,}"
           f"  out {total['out_tokens']:,}")
-    print(f"  merged {out['duplicate_responses_merged']} streamed duplicates")
+    merged = out["duplicate_responses_merged"]
+    if merged:
+        print(f"  merged {merged} duplicate responses (same id in several transcripts)")
     for entry in out["files"]:
         name = entry["path"].split("/projects/")[-1]
         models = ",".join(entry["models"]) or "?"

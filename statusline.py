@@ -57,6 +57,8 @@ def meter_part(data):
 
 
 def money_part(data, costs):
+    if costs is None:
+        return ""
     tpath = data.get("transcript_path")
     if not tpath or not os.path.isfile(tpath):
         return ""
@@ -84,6 +86,8 @@ def elapsed_part(data):
 
 
 def tier_part(costs):
+    if costs is None:
+        return ""
     try:
         tier = costs.tier_line()
     except Exception:
@@ -106,7 +110,10 @@ def main():
         return
     folder = ((data.get("workspace") or {}).get("current_dir")
               or data.get("cwd") or "/")
-    costs = load_costs()
+    try:
+        costs = load_costs()
+    except Exception:                  # half-installed: show the rest anyway
+        costs = None
     print(f"{CYAN}{model}{OFF} {DIM}·{OFF} "
           f"{DIM}{folder}{OFF}"
           f"{meter_part(data)}"
