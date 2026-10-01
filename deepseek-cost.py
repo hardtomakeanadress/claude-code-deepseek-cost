@@ -9,6 +9,14 @@ Peak hours are 01:00-04:00 and 06:00-10:00 UTC, Monday through Friday,
 excluding Chinese public holidays; everything else - weekends and holidays
 included - is off-peak at exactly half price (api-docs.deepseek.com).
 
+The holiday days behind that rule are the State Council's official days off,
+fetched from the internet (two machine-readable mirrors of the yearly notice,
+cross-checked), never typed in by hand; --refresh-holidays re-fetches them
+and rewrites the list in this file.  A session start also visits the
+internet once every two weeks (--check-online): DeepSeek's own pricing page,
+to see whether the rates or the peak-hours wording changed, and the holiday
+mirrors; rates that changed are applied from the page automatically.
+
     USD per 1M tokens, peak rates:
         deepseek-flash     cache hit 0.006   cache miss 0.30   output 1.20
         deepseek-v4-pro    cache hit 0.044   cache miss 1.32   output 3.96
@@ -30,11 +38,14 @@ line of ~/.config/claude-deepseek/key.env (everything after the first =).
     deepseek-cost.py --transcript t.jsonl --cache c.json       # incremental
     deepseek-cost.py --tier    # billing tier right now, for the statusline
     deepseek-cost.py --welcome # SessionStart hook payload: balance/spend/tier
+    deepseek-cost.py --refresh-holidays [--dry-run]  # re-fetch the holiday days
+    deepseek-cost.py --check-online    # re-check rates + holidays right now
 """
 import argparse
 import glob
 import json
 import os
+import re
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -49,9 +60,20 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-# Chinese public holidays 2026, State Council notice 国办发明电〔2025〕7号.
-# Only 2026 is listed; refresh the list when the next notice is published.
-HOLIDAYS = {
+# --- Chinese public holidays -------------------------------------------------
+# The days off DeepSeek bills off-peak: the State Council's yearly holiday
+# notice, fetched from the internet and cross-checked, never hand-guessed;
+# --refresh-holidays re-fetches and rewrites the block below.
+#
+#   2026 notice (国办发明电〔2025〕7号):
+#   https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm
+#
+# Mirrors: github.com/NateScarlet/holiday-cn (per-year JSON citing the notice)
+# and timor.tech/api/holiday (per-year JSON, reachable from China).  When both
+# answer they must agree exactly, or nothing gets written anywhere.
+HOLIDAYS = {  # days off; refreshed 2026-10-01 via --refresh-holidays
+    # sources checked: holiday-cn + timor.tech
+    "2026-01-01", "2026-01-02", "2026-01-03",
     "2026-02-15", "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19",
     "2026-02-20", "2026-02-21", "2026-02-22", "2026-02-23",
     "2026-04-04", "2026-04-05", "2026-04-06",
@@ -61,6 +83,58 @@ HOLIDAYS = {
     "2026-10-01", "2026-10-02", "2026-10-03", "2026-10-04", "2026-10-05",
     "2026-10-06", "2026-10-07",
 }
+
+STATE_FILE = os.path.expanduser("~/.claude/deepseek-online.json")
+PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing"
+CHECK_EVERY = timedelta(days=14)     # how often "once in a while" is
+
+
+def _read_state():
+    """What the last online check found: the holiday days it fetched, the
+    rates it read off DeepSeek's pricing page, the rule wording it saw,
+    and when to look again.  {} until the first check."""
+    try:
+        with open(STATE_FILE) as handle:
+            state = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _state_days(state):
+    """Holiday days from the check; they merge into HOLIDAYS on import, so
+    the meter and the reports see what the check saw."""
+    days = state.get("days")
+    if not isinstance(days, list):
+        return set()
+    return {day for day in days
+            if isinstance(day, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day)}
+
+
+def _state_rates(state):
+    """Rates from the check, merged over PRICES_PEAK on import.
+
+    Only entries shaped like [hit, miss, out] of plausible per-token
+    prices pass: above zero, and below 1e-3 (the page's per-1M numbers all
+    start above 1e-3, so a file written in the wrong unit gets ignored
+    rather than inflating every figure by a million).
+    """
+    rates = state.get("rates")
+    if not isinstance(rates, dict):
+        return {}
+    good = {}
+    for model, triplet in rates.items():
+        if (isinstance(model, str) and isinstance(triplet, list)
+                and len(triplet) == 3
+                and all(isinstance(value, (int, float))
+                        and 0 < value < 1e-3 for value in triplet)):
+            good[model] = tuple(float(value) for value in triplet)
+    return good
+
+
+_STATE = _read_state()
+HOLIDAYS |= _state_days(_STATE)
+PRICES_PEAK.update(_state_rates(_STATE))
 
 
 def is_peak_at(dt):
@@ -98,8 +172,8 @@ def tier_line(now=None):
 def holiday_note(short=False, now=None):
     """A warning when the holiday list no longer covers the current year.
 
-    The list is a snapshot. Once the calendar year passes its last entry, a
-    holiday it doesn't know would be priced - and marked - as peak on a day
+    The list is fetched, but only as far as the State Council has published;
+    a year past its end would be priced - and marked - as peak on days
     DeepSeek bills off-peak, so every surface says so rather than being
     quietly wrong. Empty while the list is current.
     """
@@ -108,9 +182,356 @@ def holiday_note(short=False, now=None):
     if not years or now.year <= int(years[-1]):
         return ""
     if short:
-        return f"⚠ holiday list ends {years[-1]}"
-    return (f"holiday list ends in {years[-1]} - Chinese holidays after that "
-            "get counted as peak; refresh HOLIDAYS in deepseek-cost.py")
+        return f"⚠ holidays end {years[-1]} - run --refresh-holidays"
+    return (f"holiday list ends in {years[-1]} - holidays after that price as "
+            "peak; run: python3 ~/.claude/deepseek-cost.py --refresh-holidays")
+
+
+class HolidaySourceError(Exception):
+    """No usable, agreeing answer from the holiday sources."""
+
+
+def _get_text(url):
+    """Fetch one URL and return the body as text."""
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "claude-code-deepseek-cost"})
+    with urllib.request.urlopen(request, timeout=4) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def _get_json(url):
+    """Fetch one URL and parse the body as JSON."""
+    return json.loads(_get_text(url))
+
+
+def _holidays_holiday_cn(year):
+    """The year's days off from the holiday-cn dataset (two mirrors)."""
+    error = None
+    for url in ("https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/%d.json" % year,
+                "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/%d.json" % year):
+        try:
+            days = {day["date"] for day in _get_json(url)["days"] if day.get("isOffDay")}
+            if len(days) >= 5:
+                return days
+            error = f"{url}: nothing for {year} yet"
+        except (OSError, ValueError, KeyError, TypeError) as problem:
+            error = f"{url}: {problem}"
+    raise HolidaySourceError(error or f"holiday-cn unreachable for {year}")
+
+
+def _holidays_timor(year):
+    """The year's days off from timor.tech (an API that works from China)."""
+    url = "https://timor.tech/api/holiday/year/%d" % year
+    try:
+        data = _get_json(url)
+        if data.get("code") != 0:
+            raise ValueError("code %r" % data.get("code"))
+        days = {value.get("date") or "%d-%s" % (year, key)
+                for key, value in data.get("holiday").items()
+                if value.get("holiday")}
+    except (OSError, ValueError, KeyError, TypeError) as problem:
+        raise HolidaySourceError(f"{url}: {problem}") from problem
+    if len(days) < 5:
+        raise HolidaySourceError(f"{url}: nothing for {year} yet")
+    return days
+
+
+def fetch_holidays(year):
+    """The year's days off, cross-checked; returns (days, source names).
+
+    Both sources answer -> they must match exactly (independent
+    transcriptions of the same notice) -> use the set.  One answers -> use
+    it, saying which.  None -> HolidaySourceError.
+    """
+    answers, problems = {}, []
+    for name, fetch in (("holiday-cn", _holidays_holiday_cn),
+                        ("timor.tech", _holidays_timor)):
+        try:
+            answers[name] = fetch(year)
+        except HolidaySourceError as problem:
+            problems.append(str(problem))
+    if not answers:
+        raise HolidaySourceError("; ".join(problems) or f"no source for {year}")
+    first = next(iter(answers.values()))
+    for days in answers.values():
+        if days != first:
+            differ = " ".join(sorted(first ^ days))
+            raise HolidaySourceError(f"sources disagree on {differ}")
+    return first, " + ".join(answers)
+
+
+def _write_state(state):
+    """Persist the check state; best effort, never fatal."""
+    try:
+        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        with open(STATE_FILE + ".tmp", "w") as handle:
+            json.dump(state, handle, indent=1, sort_keys=True)
+        os.replace(STATE_FILE + ".tmp", STATE_FILE)
+    except OSError:
+        pass
+
+
+def _strip_html(text):
+    """Tags out, whitespace squeezed: for matching and comparing prose."""
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", text)).strip()
+
+
+_PRICE = re.compile(r"\$\s*(\d+(?:\.\d+)?)")
+
+
+def _parse_pricing(html):
+    """Read DeepSeek's pricing page: (rates, off_peak, rule).
+
+    rates and off_peak: {model: (hit, miss, out)} USD per token - the page
+    quotes per 1M, the conversion happens here so everything downstream
+    matches PRICES_PEAK; rule: the peak-hours sentences verbatim.  Raises
+    ValueError when the page doesn't look like the one this parser knows -
+    the caller reports that instead of guessing.
+    """
+    marker = html.upper().find("CACHE HIT")
+    if marker < 0:
+        raise ValueError("no pricing table on the page")
+    table = html[html.rfind("<table", 0, marker):
+                 html.find("</table>", marker)]
+    rows = re.findall(r"<tr[^>]*>(.*?)</tr>", table, re.S)
+    if not rows:
+        raise ValueError("no table rows")
+    header = [_strip_html(cell) for cell in
+              re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", rows[0], re.S)]
+    models = [re.sub(r"\(\d+\)", "", name).strip()
+              for name in header[1:] if name.strip()]
+    if not models:
+        raise ValueError("no model columns")
+    cells = [_strip_html(cell) for cell in
+             re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", table, re.S)]
+
+    def find(label):
+        for index, text in enumerate(cells):
+            if text.upper().startswith(label):
+                return index
+        raise ValueError(f"no {label} row")
+
+    def pair_after(index):
+        """OFF-PEAK prices then PEAK prices following a label cell."""
+        if (index + 3 + 2 * len(models) > len(cells)
+                or cells[index + 1].upper() != "OFF-PEAK"
+                or cells[index + 2 + len(models)].upper() != "PEAK"):
+            raise ValueError("unexpected pricing row layout")
+        values = []
+        for cell in (cells[index + 2:index + 2 + len(models)]
+                     + cells[index + 3 + len(models):index + 3 + 2 * len(models)]):
+            match = _PRICE.fullmatch(cell)
+            if not match:
+                raise ValueError(f"not a price: {cell!r}")
+            values.append(float(match.group(1)))
+        split = len(models)
+        return values[:split], values[split:]
+
+    hit_off, hit_peak = pair_after(find("1M INPUT TOKENS (CACHE HIT)"))
+    miss_off, miss_peak = pair_after(find("1M INPUT TOKENS (CACHE MISS)"))
+    out_off, out_peak = pair_after(find("1M OUTPUT TOKENS"))
+    rates = {model: (hit_peak[index] / 1e6, miss_peak[index] / 1e6,
+                     out_peak[index] / 1e6)
+             for index, model in enumerate(models)}
+    off_peak = {model: (hit_off[index] / 1e6, miss_off[index] / 1e6,
+                        out_off[index] / 1e6)
+                for index, model in enumerate(models)}
+
+    text = _strip_html(html)
+    match = re.search(r"Peak hours are .{0,400}?holidays in full\.", text)
+    if not match:
+        raise ValueError("no peak-hours rule on the page")
+    return rates, off_peak, match.group(0)
+
+
+def check_online(now=None, force=False):
+    """The "once in a while" visit to the internet, run from a session start.
+
+    Due every CHECK_EVERY days, or whenever the holiday list can't cover
+    the current year; --check-online forces it.  It reads DeepSeek's own
+    pricing page - changed rates are applied from there, since they are the
+    authority on their prices; a changed peak-hours rule is only reported,
+    since moving the windows is a person's call.  Then it re-fetches the
+    holiday mirrors for this year and next.  Returns short notes for the
+    welcome line; [] in the normal case.
+    """
+    now = now or datetime.now(timezone.utc)
+    state = _read_state()
+    years = sorted({day[:4] for day in HOLIDAYS})
+    stale = not years or now.year > int(years[-1])
+    try:
+        due = force or stale or now >= datetime.fromisoformat(state["next_check"])
+    except (KeyError, TypeError, ValueError):
+        due = True
+    if not due:
+        return []
+    notes = []
+    completed = True
+
+    # --- DeepSeek's own pricing page ---------------------------------------
+    try:
+        page = _get_text(PRICING_URL)
+    except OSError:
+        completed = False                # transient; retried tomorrow
+    else:
+        try:
+            rates, off_peak, rule = _parse_pricing(page)
+        except ValueError:
+            notes.append("DeepSeek's pricing page changed and the rates "
+                         "couldn't be read - check PRICES_PEAK")
+        else:
+            unreadable = ("deepseek-flash" not in rates
+                          or any(not 0 < hit <= miss <= out
+                                 for hit, miss, out in rates.values()))
+            ratio = [model for model, triplet in rates.items()
+                     if abs(off_peak[model][1] * 2 - triplet[1])
+                     > triplet[1] * 1e-9]
+            if unreadable:
+                notes.append("DeepSeek's pricing page changed and the rates "
+                             "couldn't be read - check PRICES_PEAK")
+            elif ratio:
+                notes.append("DeepSeek's off-peak prices no longer look like "
+                             "exactly half - check the factor in response_cost")
+            else:
+                before = {model: PRICES_PEAK.get(model) for model in rates}
+                PRICES_PEAK.update(rates)
+                applied = [model for model in rates
+                           if before[model] != rates[model]]
+                was_rule, was_rates = state.get("rule"), state.get("rates")
+                if applied and (was_rates is None or rates != was_rates):
+                    model = ("deepseek-flash" if "deepseek-flash" in applied
+                             else sorted(applied)[0])
+                    change = (f" miss ${before[model][1] * 1e6:g} -> "
+                              f"${rates[model][1] * 1e6:g}"
+                              if before[model] else "")
+                    more = (f" (+{len(applied) - 1} more)"
+                            if len(applied) > 1 else "")
+                    notes.append(f"rates updated from DeepSeek's page: "
+                                 f"{model}{change}{more}")
+                if was_rule and rule != was_rule:
+                    notes.append("DeepSeek rewrote the peak-hours rule - "
+                                 "check the windows in deepseek-cost.py")
+                state["rates"] = rates
+                state["rule"] = rule
+
+    # --- holiday mirrors ---------------------------------------------------
+    fresh = set()
+    for year in (now.year, now.year + 1):
+        try:
+            days, _ = fetch_holidays(year)
+        except HolidaySourceError:
+            if year == now.year:
+                completed = False
+            continue                   # next year: just not published yet
+        known = {day for day in HOLIDAYS if day.startswith(str(year))}
+        if known and known != days:
+            notes.append(f"holiday days for {year} changed at the sources - "
+                         "run --refresh-holidays")
+        fresh |= days
+    if fresh:
+        HOLIDAYS.update(fresh)
+        kept = state.get("days")
+        kept = kept if isinstance(kept, list) else []
+        state["days"] = sorted({day for day in kept if isinstance(day, str)}
+                               | fresh)
+    state["next_check"] = (
+        now + (CHECK_EVERY if completed else timedelta(days=1))).isoformat()
+    _write_state(state)
+    return notes
+
+
+def check_online_command():
+    """--check-online: run the visit now and print what it saw."""
+    notes = check_online(force=True)
+    state = _read_state()
+    rates = _state_rates(state)
+    for model in sorted(rates):
+        hit, miss, out = rates[model]
+        print(f"  {model}: peak hit ${hit * 1e6:g} miss ${miss * 1e6:g} "
+              f"out ${out * 1e6:g} per 1M")
+    print(f"  rule seen: {state.get('rule') or '(not read)'}")
+    days = _state_days(state)
+    print(f"  holiday days kept: {len(days)} beyond the built-in list")
+    print(f"  next check: {state.get('next_check', '(unknown)')}")
+    for note in notes:
+        print(f"  note: {note}")
+    return 0
+
+
+def _render_holidays(days, sources, now):
+    """The HOLIDAYS = {...} block, laid out like the rest of the file."""
+    runs, run = [], []
+    for day in sorted(days):
+        if run and (datetime.fromisoformat(day)
+                    - datetime.fromisoformat(run[-1])).days > 1:
+            runs.append(run)
+            run = []
+        run.append(day)
+    if run:
+        runs.append(run)
+    lines = ["HOLIDAYS = {  # days off; refreshed %s via --refresh-holidays"
+             % now.date().isoformat(),
+             f"    # sources checked: {sources}"]
+    for run in runs:
+        for start in range(0, len(run), 5):
+            lines.append("    "
+                         + ", ".join(f'"{day}"' for day in run[start:start + 5])
+                         + ",")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def refresh_holidays_command(dry_run=False):
+    """Re-fetch holiday days and rewrite the HOLIDAYS block in this file.
+
+    Fetches this year and next (next year only once its notice is out),
+    keeps every day already carried, and refuses to write anything unless
+    the sources agree and the result still compiles.
+    """
+    now = datetime.now(timezone.utc)
+    fetched, sources = {}, set()
+    for year in (now.year, now.year + 1):
+        try:
+            days, used = fetch_holidays(year)
+        except HolidaySourceError as problem:
+            if year == now.year:
+                print(f"err: {year}: {problem}")
+                return 1
+            print(f"warn: {year}: {problem} (next year's notice not out yet?)")
+            continue
+        fetched[year] = days
+        sources.update(used.split(" + "))
+    all_days = set(HOLIDAYS)
+    for year, days in sorted(fetched.items()):
+        unconfirmed = sorted(day for day in all_days
+                             if day[:4] == str(year) and day not in days)
+        if unconfirmed:
+            print(f"warn: not in the fetched {year} set, kept anyway: "
+                  + " ".join(unconfirmed))
+        all_days |= days
+    added = sorted(all_days - HOLIDAYS)
+    block = _render_holidays(all_days, " + ".join(sorted(sources)), now)
+    path = os.path.abspath(__file__)
+    with open(path) as handle:
+        source = handle.read()
+    updated, count = re.subn(r"HOLIDAYS = \{.*?^\}", lambda _: block, source,
+                             count=1, flags=re.DOTALL | re.MULTILINE)
+    if count != 1:
+        print(f"err: no HOLIDAYS block found in {path}")
+        return 1
+    compile(updated, path, "exec")   # never write something that won't run
+    if dry_run:
+        print(block)
+        print(f"dry-run: {path} not touched")
+        return 0
+    with open(path + ".tmp", "w") as handle:
+        handle.write(updated)
+    os.replace(path + ".tmp", path)
+    mark = f" (+{len(added)} new)" if added else " (unchanged)"
+    print(f"ok: {path} now carries {len(all_days)} holiday days{mark}")
+    if added:
+        print("     new: " + " ".join(added))
+    return 0
 
 
 def response_cost(model, ts, miss, hit, out):
@@ -284,6 +705,10 @@ def billing_model():
 
 def welcome():
     """SessionStart hook payload: model, balance, all-time spend, tier."""
+    try:
+        notes = check_online()        # the "once in a while" internet visit
+    except Exception:                 # a hook must never break session start
+        notes = []
     base = os.path.expanduser("~/.claude/projects")
     try:
         spent = report(sorted(glob.glob(os.path.join(base, "**", "*.jsonl"),
@@ -294,6 +719,8 @@ def welcome():
     balance = fetch_balance()
     left = f"${balance:.2f} left" if balance is not None else "balance unavailable"
     line = f"{billing_model()} — {left} · {spent_text} · {tier_line()}"
+    for note in notes:
+        line += f" · {note}"
     note = holiday_note(short=True)
     if note:
         line += f" · {note}"
@@ -342,7 +769,20 @@ def main():
                         help="only print the current billing tier, e.g. '▽ cheap · 162h42m left'")
     parser.add_argument("--welcome", action="store_true",
                         help="print the SessionStart hook payload: balance, spend, tier")
+    parser.add_argument("--refresh-holidays", action="store_true",
+                        help="re-fetch the holiday days from the sources and "
+                             "rewrite the HOLIDAYS list in this file")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --refresh-holidays: print the block, write nothing")
+    parser.add_argument("--check-online", action="store_true",
+                        help="re-check DeepSeek's pricing page and the holiday "
+                             "sources right now (normally every %d days from "
+                             "--welcome)" % CHECK_EVERY.days)
     args = parser.parse_args()
+    if args.refresh_holidays:
+        raise SystemExit(refresh_holidays_command(dry_run=args.dry_run))
+    if args.check_online:
+        raise SystemExit(check_online_command())
     if args.tier:
         print(tier_line())
         return

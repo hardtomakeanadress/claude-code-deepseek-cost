@@ -123,13 +123,23 @@ through PowerShell when it is not — this works under either, but note:
   first `=`). Without it everything else works; the line reads "balance unavailable".
 - **Model label** — `$ANTHROPIC_MODEL` when set, otherwise `env.ANTHROPIC_MODEL`
   in `~/.config/claude-deepseek/settings.json`, otherwise `deepseek-flash`.
-- **Prices and holidays** — when DeepSeek changes rates, edit `PRICES_PEAK` at
-  the top of `deepseek-cost.py` (retired model names map through `ALIASES`).
-  The `HOLIDAYS` set holds the 2026 Chinese public holidays (State Council
-  notice); refresh it when the next notice is published. If the list ever
-  falls behind the calendar, the session-start line and reports say so
-  (`⚠ holiday list ends 2026`) — the meter itself only ever shows the tier
-  and the time left.
+- **Prices and holidays** — checked against the sources, not trusted to stay
+  hardcoded. Once every two weeks, a session start re-reads
+  [DeepSeek's own pricing page](https://api-docs.deepseek.com/quick_start/pricing):
+  changed rates are applied from there automatically (they are the authority
+  on their prices), a changed peak-hours wording is reported but never
+  applied (moving the windows is a person's call), and the holiday mirrors
+  are re-fetched — [holiday-cn](https://github.com/NateScarlet/holiday-cn)
+  and [timor.tech](https://timor.tech/api/holiday), two machine-readable
+  renditions of the State Council's yearly notice, cross-checked against
+  each other. `deepseek-cost.py --check-online` runs the visit by hand and
+  prints what it saw; findings live in `~/.claude/deepseek-online.json`.
+  The built-in `PRICES_PEAK` card and `HOLIDAYS` list stay as the offline
+  fallback; `--refresh-holidays` re-fetches the holiday days and rewrites
+  the list in the file it is run from (`--dry-run`: print, don't write). If
+  the holiday list ever falls behind the calendar, the session-start line
+  and reports say so (`⚠ holidays end 2026 – run --refresh-holidays`) — the
+  meter itself only ever shows the tier and the time left.
 
 ## How the costing works
 
@@ -143,8 +153,12 @@ through PowerShell when it is not — this works under either, but note:
 - `cache_creation` tokens are billed as misses (DeepSeek has no separate
   cache-write line item), and thinking tokens are included in output tokens.
 - Peak hours are **01:00–04:00 and 06:00–10:00 UTC, Monday–Friday, excluding
-  Chinese public holidays**. Everything else — nights, weekends, holidays — is
-  off-peak at exactly half price. Peak rates per 1M tokens:
+  Chinese public holidays** — the State Council's official days off
+  ([2026 notice](https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm)),
+  fetched from the cross-checked sources above, never typed in by hand.
+  Everything else — nights, weekends, holidays — is off-peak at exactly half
+  price. Peak rates per 1M tokens, re-read from DeepSeek's page and updated
+  automatically if they ever change:
 
   | model           | cache hit | cache miss | output |
   |-----------------|-----------|------------|--------|
@@ -166,6 +180,8 @@ deepseek-cost.py --transcript s.jsonl --cache c.json   # incremental, for fast r
 deepseek-cost.py --all-projects --report               # everything under ~/.claude/projects
 deepseek-cost.py --tier                                # e.g. "▽ cheap · 162h42m left"
 deepseek-cost.py --welcome                             # SessionStart hook JSON payload
+deepseek-cost.py --refresh-holidays [--dry-run]        # update the holiday list
+deepseek-cost.py --check-online                        # re-check rates and holidays now
 ```
 
 ## Troubleshooting
@@ -183,9 +199,10 @@ deepseek-cost.py --welcome                             # SessionStart hook JSON 
 
 ## Uninstall
 
-Delete `~/.claude/statusline.py` and `~/.claude/deepseek-cost.py`, and remove
-the `statusLine` and `hooks.SessionStart` entries from `~/.claude/settings.json`
-— or restore the `settings.json.bak-<timestamp>` the installer wrote.
+Delete `~/.claude/statusline.py`, `~/.claude/deepseek-cost.py` and
+`~/.claude/deepseek-online.json`, and remove the `statusLine` and
+`hooks.SessionStart` entries from `~/.claude/settings.json` — or restore the
+`settings.json.bak-<timestamp>` the installer wrote.
 
 ## License
 
