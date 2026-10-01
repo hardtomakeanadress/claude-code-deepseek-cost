@@ -135,11 +135,14 @@ through PowerShell when it is not — this works under either, but note:
   each other. `deepseek-cost.py --check-online` runs the visit by hand and
   prints what it saw; findings live in `~/.claude/deepseek-online.json`.
   The built-in `PRICES_PEAK` card and `HOLIDAYS` list stay as the offline
-  fallback; `--refresh-holidays` re-fetches the holiday days and rewrites
-  the list in the file it is run from (`--dry-run`: print, don't write). If
-  the holiday list ever falls behind the calendar, the session-start line
-  and reports say so (`⚠ holidays end 2026 – run --refresh-holidays`) — the
-  meter itself only ever shows the tier and the time left.
+  fallback; `--refresh-holidays` re-fetches the holiday days — the previous,
+  current, and next year — and rewrites the list in the file it is run from
+  (`--dry-run`: print, don't write). A year both mirrors agree on replaces
+  whatever was carried for it (additions and removals alike); a year only
+  one answered for is merged day by day. If the holiday list ever falls
+  behind the calendar, the session-start line and reports say so
+  (`⚠ holidays end 2026 – run --refresh-holidays`) — the meter itself only
+  ever shows the tier and the time left.
 
 ## How the costing works
 
@@ -157,8 +160,9 @@ through PowerShell when it is not — this works under either, but note:
   ([2026 notice](https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm)),
   fetched from the cross-checked sources above, never typed in by hand.
   Everything else — nights, weekends, holidays — is off-peak at exactly half
-  price. Peak rates per 1M tokens, re-read from DeepSeek's page and updated
-  automatically if they ever change:
+  price. (A report flags any response dated to a year the list has no days
+  for, since those days off would price as peak.) Peak rates per 1M tokens,
+  re-read from DeepSeek's page and updated if they ever change:
 
   | model           | cache hit | cache miss | output |
   |-----------------|-----------|------------|--------|
