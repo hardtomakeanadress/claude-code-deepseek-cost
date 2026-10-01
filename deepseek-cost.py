@@ -76,7 +76,7 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-VERSION = "1.0"     # what the statusline shows; bump with the repo's version.txt
+VERSION = "1.1"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday
@@ -115,7 +115,9 @@ PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing"
 VERSION_URLS = (                    # where the repo's version.txt lives:
     "https://cdn.jsdelivr.net/gh/hardtomakeanadress/claude-code-deepseek-cost@main/version.txt",
     "https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/version.txt",
-)                                   # CDN first (reachable from China), raw second
+)                                   # both are asked; raw is fresh but blocked
+                                    # in China, the CDN is reachable there but
+                                    # caches for hours - the newer answer wins
 CHECK_EVERY = timedelta(days=14)     # how often "once in a while" is
 CHECK_BUDGET = 12                    # seconds a visit's network work may take
                                      # in total - every request is capped by
@@ -379,17 +381,22 @@ def _read_time(value):
 def fetch_latest_version():
     """The version the repo carries, or None when it can't be read.
 
-    Any failure just means no news this time; nothing about the local
-    pricing or the check's schedule depends on it.
+    Asks every mirror and keeps the numerically newest answer: the CDN
+    can serve an old release for hours after GitHub already has the next
+    one, and the raw URL is unreachable from China.  A failure just
+    means no news from that source; nothing about the local pricing or
+    the check's schedule depends on it.
     """
+    best = None
     for url in VERSION_URLS:
         try:
             text = _get_text(url).strip()
         except OSError:
             continue
         if VERSION_RE.fullmatch(text):      # digits capped, int() can't choke
-            return text
-    return None
+            if best is None or _newer(text, best):
+                best = text
+    return best
 
 
 def _holidays_holiday_cn(year):
