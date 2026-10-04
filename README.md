@@ -16,7 +16,7 @@ bash, no jq. Runs on Linux, macOS, and Windows (WSL, Git Bash, or PowerShell).
 **Live statusline**, redrawn continuously while you work:
 
 ```
-deepseek-flash · /home/you/project ███████░░░ 71% $0.17 24m ▽ cheap · 162h16m left · v1.0
+deepseek-flash · /home/you/project ███████░░░ 71% $0.17 24m ▽ cheap · 162h16m left · v1.2
 ```
 
 model · working folder · context-window meter · this session's DeepSeek cost ·
@@ -56,6 +56,27 @@ total $8.2871 over 5119 responses (137 rows skipped: model not on the card)
 If your sessions run on Anthropic models, everything still installs and works;
 those responses are simply skipped in reports ("rows skipped: model not on the card").
 
+## Context window
+
+Claude Code assumes a **200K** context window for model IDs it does not
+recognize, and auto-compacts inside that guess — including `deepseek-flash`
+and `deepseek-v4-pro`, which take 1M (long chats then compact early).
+DeepSeek's documented fix, and what this installer applies when it recognizes
+a 1M DeepSeek model:
+
+| key | value | note |
+|-----|-------|------|
+| `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `1000000` | unneeded when the model name already ends in `[1m]`, which declares the same window |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `786432` | DeepSeek's own recommended compact point; the effective window is the smaller of the two |
+
+The keys go into the settings file that carries the routing: the
+`~/.config/claude-deepseek/settings.json` router config when there is one,
+otherwise `~/.claude/settings.json` (export-style setups). An already-set key
+is never overridden, and a Claude Code restart is required to pick them up.
+If detection misses your setup, add the same keys by hand, or append `[1m]`
+to the model name (DeepSeek's official form). Don't declare a window larger
+than the model really has: requests error out mid-chat instead of compacting.
+
 ## Install
 
 ```sh
@@ -69,7 +90,9 @@ installer copies the two scripts into `~/.claude/` and merges the statusline and
 the `SessionStart` hook into `~/.claude/settings.json`. An existing
 `settings.json` is backed up first, an existing *different* statusLine is never
 overwritten, the hook is added at most once, and `--dry-run` shows the plan
-before anything is touched. To update later: `git pull && python3 install.py`.
+before anything is touched. When it recognizes a 1M DeepSeek model it also
+ensures the two [context-window](#context-window) keys in whichever settings
+file carries the routing. To update later: `git pull && python3 install.py`.
 
 ### For automated installs
 
@@ -92,7 +115,7 @@ python3 ~/.claude/deepseek-cost.py --tier
 # ▽ cheap · 162h42m left      (or: ▲ peak · 2h10m left)
 
 python3 ~/.claude/deepseek-cost.py --version
-# v1.0
+# v1.2
 
 python3 ~/.claude/deepseek-cost.py --transcript examples/sample.jsonl --report
 # total $0.0005 over 1 response (0 rows skipped: model not on the card)
@@ -150,7 +173,7 @@ through PowerShell when it is not — this works under either, but note:
   behind the calendar, the session-start line and reports say so
   (`⚠ holidays end 2026 – run --refresh-holidays`) — the meter itself only
   ever shows the tier and the time left.
-- **Updates** — the statusline ends with the version you run (`· v1.0`). The
+- **Updates** — the statusline ends with the version you run (`· v1.2`). The
   same two-weekly visit that checks prices reads `version.txt` from this
   repo — the jsDelivr CDN first (reachable from China), GitHub raw second —
   and once it sees a newer version, every session-start line carries
@@ -213,6 +236,8 @@ deepseek-cost.py --version                             # e.g. v1.0
   unreachable. Check `$DEEPSEEK_API_KEY` or `key.env` (the line needs an `=`).
 - **No dollar figure next to the %** — the cost appears once the session has
   its first recorded response.
+- **Compaction fires early, around ~200K** — Claude Code assumed a 200K window
+  for `deepseek-flash`; see [Context window](#context-window).
 - **Garbled colours** — some terminals render ANSI badly when the statusline
   overlaps other UI updates; the line is deliberately single-line.
 
@@ -220,8 +245,10 @@ deepseek-cost.py --version                             # e.g. v1.0
 
 Delete `~/.claude/statusline.py`, `~/.claude/deepseek-cost.py` and
 `~/.claude/deepseek-online.json`, and remove the `statusLine` and
-`hooks.SessionStart` entries from `~/.claude/settings.json` — or restore the
-`settings.json.bak-<timestamp>` the installer wrote.
+`hooks.SessionStart` entries plus any `CLAUDE_CODE_MAX_CONTEXT_TOKENS` /
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW` keys the installer added (see
+[Context window](#context-window)) — or restore the `settings.json.bak-<timestamp>`
+the installer wrote for each file it touched.
 
 ## License
 
