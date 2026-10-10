@@ -38,6 +38,8 @@ function Warn ($m) { Write-Host "warn: $m" -ForegroundColor Yellow }
 function Err  ($m) { Write-Host "err:  $m" -ForegroundColor Red }
 function Say  ($m) { Write-Host "  [dry-run] $m" -ForegroundColor DarkGray }
 
+Write-Host "dclaude-bootstrap rev 5 (2026-10-10)" -ForegroundColor DarkGray
+
 $RepoUrl  = "https://github.com/hardtomakeanadress/claude-code-deepseek-cost"
 $RepoDir  = Join-Path $HOME "claude-code-deepseek-cost"
 $ConfDir  = Join-Path $HOME ".config\claude-deepseek"
@@ -48,16 +50,13 @@ $Settings = Join-Path $ConfDir "settings.json"
 $git = Get-Command git -ErrorAction SilentlyContinue
 
 function Find-Python {
+    # WindowsApps aliases are never executed: when no real Python is behind
+    # them they are stubs that print "Python was not found ... Microsoft
+    # Store" - an error-looking message the bootstrap must never cause. A
+    # machine with only those aliases gets a real python.org Python below.
     foreach ($candidate in @("python", "python3", "py")) {
         $c = Get-Command $candidate -ErrorAction SilentlyContinue
-        if (-not $c) { continue }
-        # A WindowsApps alias is a real Python only when a Store-installed one
-        # answers; the bare stub would open the Microsoft Store instead.
-        if ("$($c.Source)" -like "*\WindowsApps\*") {
-            $probe = & $candidate -c "print(1)" 2>$null
-            if ("$probe".Trim() -ne "1") { continue }
-        }
-        return $candidate
+        if ($c -and "$($c.Source)" -notlike "*\WindowsApps\*") { return $candidate }
     }
     return $null
 }
