@@ -291,6 +291,32 @@ foreach ($p in $profileTargets) {
     }
 }
 
+# A PATH launcher as well: profiles only work when they load - execution
+# policy, -NoProfile shortcuts and pwsh/5.1 mixups can all eat them - so
+# dclaude.cmd goes next to claude.exe in .local\bin, which is on PATH.
+$launcher = Join-Path $localBin "dclaude.cmd"
+$launcherText = (@'
+@echo off
+setlocal
+set "KEY="
+set "KEYFILE=%USERPROFILE%\.config\claude-deepseek\key.env"
+if exist "%KEYFILE%" for /f "usebackq tokens=1,* delims==" %%A in ("%KEYFILE%") do if /i "%%A"=="DEEPSEEK_API_KEY" set "KEY=%%B"
+if not defined KEY set "KEY=%DEEPSEEK_API_KEY%"
+if not defined KEY echo dclaude: no key in %KEYFILE% and no DEEPSEEK_API_KEY set & exit /b 1
+set "ANTHROPIC_AUTH_TOKEN=%KEY%"
+set "CLAUDE_EXE=claude"
+where claude >nul 2>nul || set "CLAUDE_EXE=%USERPROFILE%\.local\bin\claude.exe"
+"%CLAUDE_EXE%" --settings "%USERPROFILE%\.config\claude-deepseek\settings.json" %*
+'@ -split "`r?`n") -join "`r`n"
+if ($DryRun) {
+    Say "would write the dclaude launcher to $launcher"
+} elseif ((Test-Path $launcher) -and ((Get-Content -Raw $launcher).Trim() -eq $launcherText.Trim())) {
+    Ok "dclaude launcher already present"
+} else {
+    Set-Content -Path $launcher -Value $launcherText -Encoding ascii
+    Ok "dclaude launcher written: $launcher"
+}
+
 # Windows PowerShell's default policy (Restricted) silently skips profile
 # files - the dclaude function would never load. Judge the policy a NORMAL
 # window would resolve (a -ExecutionPolicy Bypass run does not tell us), and
