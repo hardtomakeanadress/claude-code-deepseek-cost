@@ -94,6 +94,29 @@ before anything is touched. When it recognizes a 1M DeepSeek model it also
 ensures the two [context-window](#context-window) keys in whichever settings
 file carries the routing. To update later: `git pull && python3 install.py`.
 
+### One-command bootstrap (fresh machines)
+
+To set up a brand-new machine end to end — Claude Code, the DeepSeek routing
+config, a `dclaude` launcher, and this meter — run the bootstrap script for
+your platform. It is key-free: the DeepSeek API key is read from the
+environment or a hidden interactive prompt and stored only in
+`~/.config/claude-deepseek/key.env`.
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/bootstrap/dclaude-bootstrap.ps1 | iex
+```
+
+macOS / Linux / WSL:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/bootstrap/dclaude-bootstrap.sh | bash
+```
+
+Re-running is safe; nothing is overwritten without a backup. `-DryRun` /
+`--dry-run` prints the plan without touching anything.
+
 ### For automated installs
 
 `install.py` is non-interactive, prints `ok:` / `warn:` / `err:` lines, exits
