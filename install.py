@@ -19,11 +19,12 @@ CLAUDE_CODE_AUTO_COMPACT_WINDOW - in whichever settings file carries the
 routing (the claude-deepseek router config, or ~/.claude/settings.json).
 See "Context window" in the README.
 
-Safety rules: settings.json is backed up before any change, an existing
-different statusLine is never overwritten, an already-set context key is
-never overridden, the hook is added at most once, and nothing else in the
-file is touched. Safe to re-run - that is also how you update the scripts
-after a `git pull`.
+Safety rules: settings.json is backed up before any change, a statusLine
+that points at some other tool is never overwritten (one that already
+references this tool's script is refreshed in place), an already-set context
+key is never overridden, the hook is added at most once, and nothing else in
+the file is touched. Safe to re-run - that is also how you update the
+scripts after a `git pull`.
 """
 import argparse
 import json
@@ -43,12 +44,32 @@ CONTEXT_1M_MODELS = ("deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro")
 ROUTER_SETTINGS = "~/.config/claude-deepseek/settings.json"
 
 
+def _runs(name):
+    """True when `name -c 'print(1)'` really executes."""
+    try:
+        done = subprocess.run([name, "-c", "print(1)"],
+                              capture_output=True, text=True, timeout=15)
+    except OSError:
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "1"
+
+
 def interpreter():
-    """The name to write into settings.json: python3 wherever it exists."""
-    names = ("python", "python3") if os.name == "nt" else ("python3", "python")
+    """The name to write into settings.json: python3 wherever it exists.
+
+    On Windows: python (python.org installs), then python3 (Microsoft Store),
+    then the py launcher - in that order. A WindowsApps alias counts only
+    when a Store-installed Python actually answers; the bare stub would open
+    the Microsoft Store instead.
+    """
+    names = ("python", "python3", "py") if os.name == "nt" else ("python3", "python")
     for name in names:
-        if shutil.which(name):
-            return name
+        found = shutil.which(name)
+        if not found:
+            continue
+        if "windowsapps" in found.lower() and not _runs(name):
+            continue
+        return name
     return names[0]
 
 
@@ -68,16 +89,55 @@ def load_settings(path):
     return settings
 
 
+def _windows_short_path(path):
+    """The 8.3 form of path, or None - it has no spaces and no $ or quotes."""
+    try:
+        import ctypes
+        buffer = ctypes.create_unicode_buffer(1024)
+        size = ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer))
+        if 0 < size < len(buffer):
+            short = buffer.value
+            if short and short.lower() != str(path).lower():
+                return short
+    except Exception:
+        pass
+    return None
+
+
+def command_for(py, script, extra=()):
+    """The command string Claude Code runs for one of our scripts.
+
+    Unix keeps the $HOME form. On Windows the command goes through Git Bash
+    (which eats unquoted backslashes) or PowerShell depending on what is
+    installed, so the path is written as a concrete forward-slash absolute
+    path. Plain paths go in bare; a path with spaces goes in double quotes;
+    a path with $ or quotes (which the two shells expand differently and no
+    single quoting survives) prefers the 8.3 short name when the filesystem
+    offers one.
+    """
+    if os.name == "nt":
+        # bare interpreter name (a quoted one parses in bash but not in
+        # PowerShell)
+        target = Path.home() / ".claude" / script
+        shown = (_windows_short_path(target) or str(target)).replace("\\", "/")
+        if any(ch in shown for ch in " '\"$`"):
+            shown = f'"{shown}"'
+        parts = [py, shown]
+    else:
+        parts = [py, f'"$HOME/.claude/{script}"']
+    return " ".join(parts + list(extra))
+
+
 def status_block(py):
     return {"type": "command",
-            "command": f'{py} "$HOME/.claude/statusline.py"',
+            "command": command_for(py, "statusline.py"),
             "padding": 0}
 
 
 def hook_entry(py):
     return {"matcher": "startup|resume|clear",
             "hooks": [{"type": "command",
-                       "command": f'{py} "$HOME/.claude/deepseek-cost.py" --welcome',
+                       "command": command_for(py, "deepseek-cost.py", ("--welcome",)),
                        "timeout": 30}]}
 
 
@@ -168,11 +228,22 @@ def plan(settings, py):
     changes = []
     ours = status_block(py)
     existing = settings.get("statusLine")
+    ours_ref = ".claude/statusline.py"
+    existing_ref = (str(existing.get("command", "")).lower().replace("\\", "/")
+                    if isinstance(existing, dict) else "")
     if existing is None:
         settings["statusLine"] = ours
         changes.append("statusLine added")
     elif existing == ours:
         print("ok: statusLine already configured")
+    elif ours_ref in existing_ref:       # ours from an older install - update
+        merged = dict(existing)
+        merged.update(ours)
+        if merged == existing:
+            print("ok: statusLine already configured")
+        else:
+            settings["statusLine"] = merged
+            changes.append("statusLine updated to the current command")
     else:
         print("warn: settings.json already has a different statusLine - left untouched;")
         print(f"      to switch, replace its command with: {ours['command']}")
@@ -188,11 +259,31 @@ def plan(settings, py):
         sessions = hooks["SessionStart"] = []
     if not isinstance(sessions, list):
         print("warn: SessionStart has an unexpected shape - hook not added")
-    elif any("deepseek-cost.py" in json.dumps(entry) for entry in sessions):
-        print("ok: SessionStart hook already present")
     else:
-        sessions.append(hook_entry(py))
-        changes.append("hooks.SessionStart cost check added")
+        ours_hook = hook_entry(py)
+        matches = [entry for entry in sessions
+                   if isinstance(entry, dict)
+                   and "deepseek-cost.py" in json.dumps(entry).lower()]
+        if not matches:
+            sessions.append(ours_hook)
+            changes.append("hooks.SessionStart cost check added")
+        else:
+            # update just the matching handler, keeping any siblings and the
+            # entry's own matcher untouched
+            wanted = ours_hook["hooks"][0]["command"]
+            changed = False
+            handlers = matches[0].get("hooks")
+            if isinstance(handlers, list):
+                for handler in handlers:
+                    if (isinstance(handler, dict)
+                            and "deepseek-cost.py" in json.dumps(handler).lower()
+                            and handler.get("command") != wanted):
+                        handler["command"] = wanted
+                        changed = True
+            if changed:
+                changes.append("hooks.SessionStart cost check updated to the current command")
+            else:
+                print("ok: SessionStart hook already present")
     return changes
 
 

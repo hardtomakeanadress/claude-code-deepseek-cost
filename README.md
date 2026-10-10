@@ -88,9 +88,10 @@ python3 install.py          # on Windows: python install.py
 Start a new Claude Code session and the line appears above the prompt. The
 installer copies the two scripts into `~/.claude/` and merges the statusline and
 the `SessionStart` hook into `~/.claude/settings.json`. An existing
-`settings.json` is backed up first, an existing *different* statusLine is never
-overwritten, the hook is added at most once, and `--dry-run` shows the plan
-before anything is touched. When it recognizes a 1M DeepSeek model it also
+`settings.json` is backed up first; a statusLine that points at some other tool
+is never overwritten (one that already references this tool's script is
+refreshed in place), the hook is added at most once, and `--dry-run` shows the
+plan before anything is touched. When it recognizes a 1M DeepSeek model it also
 ensures the two [context-window](#context-window) keys in whichever settings
 file carries the routing. To update later: `git pull && python3 install.py`.
 
@@ -116,6 +117,12 @@ curl -fsSL https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deep
 
 Re-running is safe; nothing is overwritten without a backup. `-DryRun` /
 `--dry-run` prints the plan without touching anything.
+
+On Windows the bootstrap also does the two things newer machines keep failing
+on: it puts `%USERPROFILE%\.local\bin` on your user PATH (the native installer
+does not, so `claude` is otherwise not found), and it lifts a `Restricted`
+execution policy to `RemoteSigned` for the current user so the `dclaude`
+function can load from your PowerShell profile.
 
 ### For automated installs
 
@@ -159,15 +166,25 @@ report also prints a `note:` line until the list is refreshed — expected.)
 
 ## Windows
 
-Claude Code runs command strings through Git Bash when it is installed, and
-through PowerShell when it is not — this works under either, but note:
+Native Windows (PowerShell) and WSL both work. Claude Code runs command
+strings through Git Bash when it is installed, and through PowerShell when it
+is not; the installer writes commands that work under either:
 
-- Use `python` instead of `python3`; python.org installs provide `python`.
-  (The installer writes whichever interpreter it finds.)
-- The commands use `$HOME`, which both Git Bash and PowerShell expand. If you
-  hand-edit them, don't write literal `C:\...` paths: Git Bash treats
-  backslashes as escape characters and the command fails without a visible
-  error. Forward slashes work everywhere.
+- On Windows the statusline and hook commands use the interpreter actually on
+  the machine (`python`, `python3`, or `py`; the Microsoft Store stub counts
+  as missing) and a concrete forward-slash path
+  (`C:/Users/you/.claude/statusline.py`). If you hand-edit these commands,
+  never use `C:\...` backslash paths — Git Bash eats them and the command
+  fails without a visible error.
+- `claude.exe` lands in `%USERPROFILE%\.local\bin`, and the native installer
+  does not add that folder to PATH (it only prints a note about it). The
+  bootstrap adds it for you; by hand, append it to the user PATH and open a
+  new window.
+- PowerShell profiles — and with them the `dclaude` function — do not load
+  under the default `Restricted` execution policy. The bootstrap sets
+  `RemoteSigned` for the current user when needed; by hand:
+  `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`,
+  then open a new window.
 
 ## Configuration
 
