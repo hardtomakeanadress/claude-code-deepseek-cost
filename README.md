@@ -79,62 +79,40 @@ than the model really has: requests error out mid-chat instead of compacting.
 
 ## Install
 
-```sh
-git clone https://github.com/hardtomakeanadress/claude-code-deepseek-cost
-cd claude-code-deepseek-cost
-python3 install.py          # on Windows: python install.py
-```
-
-Start a new Claude Code session and the line appears above the prompt. The
-installer copies the two scripts into `~/.claude/` and merges the statusline and
-the `SessionStart` hook into `~/.claude/settings.json`. An existing
-`settings.json` is backed up first; a statusLine that points at some other tool
-is never overwritten (one that already references this tool's script is
-refreshed in place), the hook is added at most once, and `--dry-run` shows the
-plan before anything is touched. When it recognizes a 1M DeepSeek model it also
-ensures the two [context-window](#context-window) keys in whichever settings
-file carries the routing. To update later: `git pull && python3 install.py`.
-
-### One-command bootstrap (fresh machines)
-
-To set up a brand-new machine end to end — Claude Code, the DeepSeek routing
-config, a `dclaude` launcher, and this meter — run the bootstrap script for
-your platform. It is key-free: the DeepSeek API key is read from the
-environment or a hidden interactive prompt and stored only in
-`~/.config/claude-deepseek/key.env`.
-
-Windows (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/bootstrap/dclaude-bootstrap.ps1 | iex
-```
-
-macOS / Linux / WSL:
+Fresh machine — one command gets Claude Code, the DeepSeek routing, a
+`dclaude` command, and this meter:
 
 ```sh
+# macOS / Linux / WSL
 curl -fsSL https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/bootstrap/dclaude-bootstrap.sh | bash
 ```
 
-Re-running is safe; nothing is overwritten without a backup. `-DryRun` /
-`--dry-run` prints the plan without touching anything.
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/hardtomakeanadress/claude-code-deepseek-cost/main/bootstrap/dclaude-bootstrap.ps1 | iex
+```
 
-On Windows the bootstrap also does the two things newer machines keep failing
-on: it puts `%USERPROFILE%\.local\bin` on your user PATH (the native installer
-does not, so `claude` is otherwise not found), and it lifts a `Restricted`
-execution policy to `RemoteSigned` for the current user so the `dclaude`
-function can load from your PowerShell profile.
+It asks for your DeepSeek API key once (an existing key is kept). Then open a
+**new** terminal and run `dclaude`. Re-running is safe; `-DryRun` / `--dry-run`
+prints the plan first.
 
-### For automated installs
+Already on DeepSeek? Just add the meter:
 
-`install.py` is non-interactive, prints `ok:` / `warn:` / `err:` lines, exits
-non-zero on failure, and is safe to re-run — a second run reports everything as
-already present. `--dry-run` prints the planned file copies and settings
-changes and touches nothing.
+```sh
+git clone https://github.com/hardtomakeanadress/claude-code-deepseek-cost
+cd claude-code-deepseek-cost
+python3 install.py          # Windows: python install.py
+```
 
-Manual install: copy `deepseek-cost.py` and `statusline.py` into `~/.claude/`
-and merge the blocks from `settings.example.json` into
-`~/.claude/settings.json`. (`statusline.sh` is the original Bash
-implementation, kept as an identical-output fallback for systems with bash + jq.)
+Start a new Claude Code session and the line appears above the prompt. The
+installer merges the statusline and `SessionStart` hook into
+`~/.claude/settings.json` — backed up first, your own statusline untouched,
+safe to re-run. Update later: `git pull && python3 install.py`.
+
+`install.py` is non-interactive (`ok:` / `warn:` / `err:` lines, non-zero exit
+on failure). Manual install: copy `deepseek-cost.py` and `statusline.py` into
+`~/.claude/`, then merge `settings.example.json` into
+`~/.claude/settings.json`.
 
 ## Verify the install
 
@@ -166,25 +144,24 @@ report also prints a `note:` line until the list is refreshed — expected.)
 
 ## Windows
 
-Native Windows (PowerShell) and WSL both work. Claude Code runs command
-strings through Git Bash when it is installed, and through PowerShell when it
-is not; the installer writes commands that work under either:
+The bootstrap handles all of this. Installing by hand instead:
 
-- On Windows the statusline and hook commands use the interpreter actually on
-  the machine (`python`, `python3`, or `py`; the Microsoft Store stub counts
-  as missing) and a concrete forward-slash path
-  (`C:/Users/you/.claude/statusline.py`). If you hand-edit these commands,
-  never use `C:\...` backslash paths — Git Bash eats them and the command
-  fails without a visible error.
-- `claude.exe` lands in `%USERPROFILE%\.local\bin`, and the native installer
-  does not add that folder to PATH (it only prints a note about it). The
-  bootstrap adds it for you; by hand, append it to the user PATH and open a
-  new window.
-- PowerShell profiles — and with them the `dclaude` function — do not load
-  under the default `Restricted` execution policy. The bootstrap sets
-  `RemoteSigned` for the current user when needed; by hand:
-  `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`,
-  then open a new window.
+- `claude` or `dclaude` "not recognized" in a new window → the native
+  installer doesn't put `%USERPROFILE%\.local\bin` on PATH. Fix:
+
+```powershell
+$k = Get-Item 'HKCU:\Environment'
+$raw = $k.GetValue('Path','',[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+Set-ItemProperty 'HKCU:\Environment' -Name Path -Value ($raw.TrimEnd(';') + ';%USERPROFILE%\.local\bin') -Type ExpandString
+```
+
+then open a new window. Still missing? Restart Explorer or reboot.
+
+- `dclaude` still not recognized → your PowerShell profile didn't load (the
+  default execution policy blocks profiles). Fix:
+  `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then open a new window.
+- Hand-editing statusline/hook commands: forward slashes only (`C:/...`),
+  never `C:\...` — Git Bash eats backslashes and the command fails silently.
 
 ## Configuration
 
