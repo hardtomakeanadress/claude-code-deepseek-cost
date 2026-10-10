@@ -40,22 +40,40 @@ $Settings = Join-Path $ConfDir "settings.json"
 
 # ---------------------------------------------------------------- prerequisites
 $git = Get-Command git -ErrorAction SilentlyContinue
-$py  = $null
-foreach ($candidate in @("python", "python3", "py")) {
-    $c = Get-Command $candidate -ErrorAction SilentlyContinue
-    if (-not $c) { continue }
-    # A WindowsApps alias is a real Python only when a Store-installed one
-    # answers; the bare stub would open the Microsoft Store instead.
-    if ("$($c.Source)" -like "*\WindowsApps\*") {
-        $probe = & $candidate -c "print(1)" 2>$null
-        if ("$probe".Trim() -ne "1") { continue }
+
+function Find-Python {
+    foreach ($candidate in @("python", "python3", "py")) {
+        $c = Get-Command $candidate -ErrorAction SilentlyContinue
+        if (-not $c) { continue }
+        # A WindowsApps alias is a real Python only when a Store-installed one
+        # answers; the bare stub would open the Microsoft Store instead.
+        if ("$($c.Source)" -like "*\WindowsApps\*") {
+            $probe = & $candidate -c "print(1)" 2>$null
+            if ("$probe".Trim() -ne "1") { continue }
+        }
+        return $candidate
     }
-    $py = $candidate
-    break
+    return $null
 }
 
+$py = Find-Python
+if (-not $py -and -not $NoMeter) {
+    # Claude Code itself does not need Python - the cost meter does.
+    if ($DryRun) {
+        Say "python not found - would install it for the cost meter"
+    } elseif (Get-Command winget -ErrorAction SilentlyContinue) {
+        Ok "python not found - installing Python via winget (takes a minute)"
+        winget install -e --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements | Out-Null
+        $env:Path = [string][Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                    [string][Environment]::GetEnvironmentVariable("Path", "User")
+        $py = Find-Python
+        if ($py) { Ok "python installed: $py" }
+        else { Warn "winget could not provide python - get it from python.org (tick 'Add python.exe to PATH'), then re-run; the cost meter is skipped for now" }
+    } else {
+        Warn "python not found and winget is unavailable - get it from python.org (tick 'Add python.exe to PATH'), then re-run; the cost meter is skipped for now"
+    }
+}
 if (-not $git) { Warn "git not found - install 'Git for Windows' (git-scm.com) and re-run; cost-meter steps will be skipped" }
-if (-not $py)  { Warn "python not found - install from python.org (tick 'Add python.exe to PATH') and re-run; the cost meter will be skipped" }
 
 # ---------------------------------------------------------------- 1. the key
 if ($Key) {
