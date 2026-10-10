@@ -112,22 +112,36 @@ def _windows_short_path(path):
     return None
 
 
+def _ours_statusline(command):
+    """True when a statusLine command points at this tool's own script.
+
+    Both spellings count: the long name, or the 8.3 form (STATUS~1.PY)
+    Windows falls back to when the home path cannot survive quoting. The
+    .claude anchor keeps another tool's statusline.py out of it.
+    """
+    text = str(command).lower().replace("\\", "/")
+    return ".claude/" in text and ("statusline.py" in text or "status~1.py" in text)
+
+
 def command_for(py, script, extra=()):
     """The command string Claude Code runs for one of our scripts.
 
     Unix keeps the $HOME form. On Windows the command goes through Git Bash
     (which eats unquoted backslashes) or PowerShell depending on what is
     installed, so the path is written as a concrete forward-slash absolute
-    path. Plain paths go in bare; a path with spaces goes in double quotes;
-    a path with $ or quotes (which the two shells expand differently and no
-    single quoting survives) prefers the 8.3 short name when the filesystem
-    offers one.
+    path. A plain path goes in bare, one with spaces goes in double quotes,
+    and only when it holds characters the two shells quote differently
+    ($, quotes, backticks) does it fall back to the 8.3 short name.
     """
     if os.name == "nt":
         # bare interpreter name (a quoted one parses in bash but not in
         # PowerShell)
         target = Path.home() / ".claude" / script
-        shown = (_windows_short_path(target) or str(target)).replace("\\", "/")
+        shown = str(target).replace("\\", "/")
+        if any(ch in shown for ch in "'\"$`"):
+            short = _windows_short_path(target)
+            if short:
+                shown = short.replace("\\", "/")
         if any(ch in shown for ch in " '\"$`"):
             shown = f'"{shown}"'
         parts = [py, shown]
@@ -236,15 +250,13 @@ def plan(settings, py):
     changes = []
     ours = status_block(py)
     existing = settings.get("statusLine")
-    ours_ref = ".claude/statusline.py"
-    existing_ref = (str(existing.get("command", "")).lower().replace("\\", "/")
-                    if isinstance(existing, dict) else "")
     if existing is None:
         settings["statusLine"] = ours
         changes.append("statusLine added")
     elif existing == ours:
         print("ok: statusLine already configured")
-    elif ours_ref in existing_ref:       # ours from an older install - update
+    elif isinstance(existing, dict) and _ours_statusline(existing.get("command", "")):
+        # ours from an older install - update
         merged = dict(existing)
         merged.update(ours)
         if merged == existing:
