@@ -359,13 +359,20 @@ if ($NoMeter) {
 } else {
     if (Test-Path (Join-Path $RepoDir ".git")) {
         if ($DryRun) { Say "would run: git -C $RepoDir pull --ff-only" } else { git -C $RepoDir pull --ff-only }
+    } elseif (Test-Path $RepoDir) {
+        Warn "$RepoDir exists without .git - using it as-is (no update)"
     } elseif ($DryRun) {
         Say "would clone $RepoUrl -> $RepoDir"
     } else {
         git clone $RepoUrl $RepoDir
     }
-    if ($DryRun) { Say "would run: $py $(Join-Path $RepoDir 'install.py')" }
-    else         { & $py (Join-Path $RepoDir "install.py") }
+    if (-not (Test-Path (Join-Path $RepoDir "install.py"))) {
+        Warn "install.py not found in $RepoDir - cost meter not installed; delete that folder and re-run"
+    } elseif ($DryRun) {
+        Say "would run: $py $(Join-Path $RepoDir 'install.py')"
+    } else {
+        & $py (Join-Path $RepoDir "install.py")
+    }
 }
 
 # ---------------------------------------------------------------- 6. verify
