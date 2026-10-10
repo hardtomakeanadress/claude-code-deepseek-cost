@@ -24,6 +24,12 @@ import os
 import sys
 import tempfile
 
+# The line carries box-drawing and ▽/▲ glyphs. Windows Python would encode
+# them for the pipe using the ANSI code page (cp1252, cp936, ...) and crash
+# on the first one; force UTF-8 like the console gets.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 DIM = "\033[2m"
 OFF = "\033[0m"
 CYAN = "\033[36m"

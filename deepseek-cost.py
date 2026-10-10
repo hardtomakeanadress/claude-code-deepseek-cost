@@ -51,10 +51,17 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 import time
 import urllib.request
 from datetime import datetime, timedelta, timezone
+
+# Reports and the statusline carry box-drawing and ▽/▲ glyphs. Windows Python
+# would encode them for a pipe using the ANSI code page (cp1252, cp936, ...)
+# and crash on the first one; force UTF-8 like the console gets.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 
 try:
     import fcntl                        # POSIX file locks for the state file
@@ -76,7 +83,7 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-VERSION = "1.2"     # what the statusline shows; bump with the repo's version.txt
+VERSION = "1.3"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday

@@ -29,11 +29,19 @@ scripts after a `git pull`.
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# An already-installed command, in either spelling this tool writes: the long
+# name, or the 8.3 form (DEEPSE~1.PY) Windows falls back to when the home path
+# does not survive quoting. The short form is why a run must not trust a plain
+# "deepseek-cost.py" substring check - it would not recognize its own hook and
+# would append a duplicate on every install.
+_OURS = re.compile(r"deepseek-cost\.py|deepse~1\.py", re.IGNORECASE)
 
 SCRIPTS = ("deepseek-cost.py", "statusline.py")
 
@@ -261,28 +269,38 @@ def plan(settings, py):
         print("warn: SessionStart has an unexpected shape - hook not added")
     else:
         ours_hook = hook_entry(py)
+        wanted = ours_hook["hooks"][0]["command"]
+
+        def is_ours(value):
+            return bool(_OURS.search(json.dumps(value)))
+
         matches = [entry for entry in sessions
-                   if isinstance(entry, dict)
-                   and "deepseek-cost.py" in json.dumps(entry).lower()]
+                   if isinstance(entry, dict) and is_ours(entry)]
         if not matches:
             sessions.append(ours_hook)
             changes.append("hooks.SessionStart cost check added")
         else:
             # update just the matching handler, keeping any siblings and the
             # entry's own matcher untouched
-            wanted = ours_hook["hooks"][0]["command"]
             changed = False
             handlers = matches[0].get("hooks")
             if isinstance(handlers, list):
                 for handler in handlers:
-                    if (isinstance(handler, dict)
-                            and "deepseek-cost.py" in json.dumps(handler).lower()
+                    if (isinstance(handler, dict) and is_ours(handler)
                             and handler.get("command") != wanted):
                         handler["command"] = wanted
                         changed = True
+            # an entry per install run stacked up when an older version could
+            # not recognize its own short-path commands - keep the first, drop
+            # the rest (they are byte-identical duplicates)
+            if len(matches) > 1:
+                for entry in matches[1:]:
+                    sessions.remove(entry)
+                changes.append(f"hooks.SessionStart duplicate cost checks removed "
+                               f"({len(matches) - 1})")
             if changed:
                 changes.append("hooks.SessionStart cost check updated to the current command")
-            else:
+            elif len(matches) == 1:
                 print("ok: SessionStart hook already present")
     return changes
 
