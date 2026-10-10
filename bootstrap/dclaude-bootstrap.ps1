@@ -24,7 +24,13 @@ param(
     [switch]$DryRun
 )
 
-$ErrorActionPreference = "Stop"
+# "Continue", deliberately, not "Stop": in Windows PowerShell 5.1 a native
+# exe writing anything to stderr under ErrorActionPreference=Stop aborts the
+# whole script (NativeCommandError) - and plenty of steps here (the python
+# probe, git, winget, icacls) write ordinary chatter to stderr. Errors that
+# actually matter are handled where they happen: try/catch, Test-Path, and
+# $LASTEXITCODE checks.
+$ErrorActionPreference = "Continue"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 
 function Ok   ($m) { Write-Host "ok:   $m" }
