@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Status line for Claude Code: model, folder, context, DeepSeek cost, tier.
+"""Status line for Claude Code: model, folder, context, cost, balance, tier.
 
 Claude Code pipes a JSON blob to this script on stdin and draws whatever it
 prints on a line of its own. Pure Python 3, standard library only, so the
@@ -10,6 +10,10 @@ The dollar figure is this session re-priced at DeepSeek's own rates by
 deepseek-cost.py - Claude Code's built-in number comes from an Anthropic
 rate card and reads far too high. Peak/off-peak is decided per request from
 its timestamp. It is an estimate, not a bill.
+
+"$X left" is the account balance from the last session start, cached by
+deepseek-cost.py. A redraw reads the cache and never touches the network,
+so the figure is a snapshot rather than a live balance.
 
 The trailing marker is DeepSeek's billing tier right now: green ▽ cheap
 (off-peak, half price) or red ▲ peak, with the time left in that window.
@@ -82,6 +86,18 @@ def money_part(data, costs):
         return ""
 
 
+def balance_part(costs):
+    if costs is None:
+        return ""
+    try:
+        cached = costs.read_balance_cache()
+    except Exception:                  # a statusline must never crash
+        return ""
+    if not cached:
+        return ""
+    return f" · ${cached[0]:.2f} left"
+
+
 def elapsed_part(data):
     dur = (data.get("cost") or {}).get("total_duration_ms")
     if dur is None:
@@ -137,7 +153,8 @@ def main():
     print(f"{CYAN}{model}{OFF} {DIM}·{OFF} "
           f"{DIM}{folder}{OFF}"
           f"{meter_part(data)}"
-          f"{DIM}{money_part(data, costs)}{elapsed_part(data)}{OFF}"
+          f"{DIM}{money_part(data, costs)}{elapsed_part(data)}"
+          f"{balance_part(costs)}{OFF}"
           f"{tier_part(costs)}{version_part(costs)}")
 
 

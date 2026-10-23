@@ -1,5 +1,6 @@
 #!/bin/bash
-# Status line for Claude Code: model, folder, context usage, session cost.
+# Status line for Claude Code: model, folder, context usage, session cost,
+# account balance.
 #
 # Claude Code pipes a JSON blob to this script on stdin every few hundred
 # milliseconds and draws whatever it prints on a line of its own, just above
@@ -81,6 +82,17 @@ if [ -n "$tpath" ] && [ -f "$tpath" ]; then
     fi
 fi
 
+# --- balance ----------------------------------------------------------------
+# The figure the session-start hook last fetched, cached so a redraw never
+# waits on the network. A snapshot, not a live balance.
+balance=""
+if [ -f "$HOME/.claude/deepseek-balance.json" ]; then
+    left=$(jq -r '.usd // empty' "$HOME/.claude/deepseek-balance.json" 2>/dev/null)
+    if [ -n "$left" ]; then
+        balance=$(printf ' · $%.2f left' "$left")
+    fi
+fi
+
 # --- billing tier -----------------------------------------------------------
 tier=$(python3 "$HOME/.claude/deepseek-cost.py" --tier 2>/dev/null)
 tier_part=""
@@ -115,5 +127,5 @@ printf '%s%s%s %s·%s %s%s%s%s%s%s%s%s%s\n' \
     "$cyan" "$model" "$off" \
     "$dim" "$off" \
     "$dim" "$folder" "$off" \
-    "$meter" "$dim" "$money$elapsed" "$off" \
+    "$meter" "$dim" "$money$elapsed$balance" "$off" \
     "$tier_part" "$ver_part"

@@ -34,6 +34,8 @@ Notes on the accounting:
 
 The balance lookup reads $DEEPSEEK_API_KEY when set, otherwise the first
 line of ~/.config/claude-deepseek/key.env (everything after the first =).
+The last successful figure is cached in ~/.claude/deepseek-balance.json,
+which the statusline reads so a redraw never waits on the network.
 
     deepseek-cost.py --transcript t.jsonl [--transcript ...]   # USD on stdout
     deepseek-cost.py --transcript t.jsonl --report             # human table
@@ -83,7 +85,7 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-VERSION = "1.3"     # what the statusline shows; bump with the repo's version.txt
+VERSION = "1.4"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday
@@ -118,6 +120,7 @@ HOLIDAYS = {  # days off; refreshed 2026-10-01 via --refresh-holidays
 }
 
 STATE_FILE = os.path.expanduser("~/.claude/deepseek-online.json")
+BALANCE_FILE = os.path.expanduser("~/.claude/deepseek-balance.json")
 PRICING_URL = "https://api-docs.deepseek.com/quick_start/pricing"
 VERSION_URLS = (                    # where the repo's version.txt lives:
     "https://cdn.jsdelivr.net/gh/hardtomakeanadress/claude-code-deepseek-cost@main/version.txt",
@@ -1051,6 +1054,40 @@ def fetch_balance():
         return None
 
 
+def read_balance_cache():
+    """(USD left, ISO timestamp) from the last successful lookup, or None.
+
+    The statusline calls this instead of the API: it runs on every redraw,
+    where even a fast round trip would be too slow.
+    """
+    try:
+        with open(BALANCE_FILE, encoding="utf-8") as handle:
+            record = json.load(handle)
+        balance = record.get("usd")
+        fetched = record.get("fetched_at")
+        if isinstance(balance, (int, float)) and isinstance(fetched, str):
+            return float(balance), fetched
+    except (OSError, ValueError, TypeError):
+        return None
+    return None
+
+
+def _write_balance_cache(balance):
+    """Remember a successful lookup for the statusline; best effort only."""
+    record = {"usd": round(balance, 6),
+              "fetched_at": datetime.now(timezone.utc).isoformat()}
+    temporary = f"{BALANCE_FILE}.{os.getpid()}.tmp"
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(record, handle)
+        os.replace(temporary, BALANCE_FILE)
+    except OSError:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+
+
 def billing_model():
     """The model Claude Code is pointed at.
 
@@ -1086,6 +1123,8 @@ def welcome():
         except (OSError, ValueError):
             spent_text = "spend unavailable"
         balance = fetch_balance()
+        if balance is not None:
+            _write_balance_cache(balance)
     finally:
         _DEADLINE = previous
     left = f"${balance:.2f} left" if balance is not None else "balance unavailable"
