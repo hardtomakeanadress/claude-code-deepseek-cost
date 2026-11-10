@@ -83,14 +83,12 @@ if [ -n "$tpath" ] && [ -f "$tpath" ]; then
 fi
 
 # --- balance ----------------------------------------------------------------
-# The figure the session-start hook last fetched, cached so a redraw never
-# waits on the network. A snapshot, not a live balance.
+# The cost command above schedules a background refresh on spend changes.
+# Read the latest successful API balance without waiting for the network.
 balance=""
-if [ -f "$HOME/.claude/deepseek-balance.json" ]; then
-    left=$(jq -r '.usd // empty' "$HOME/.claude/deepseek-balance.json" 2>/dev/null)
-    if [ -n "$left" ]; then
-        balance=$(printf ' · $%.2f left' "$left")
-    fi
+left=$(python3 "$HOME/.claude/deepseek-cost.py" --balance 2>/dev/null)
+if [ -n "$left" ]; then
+    balance=" · $left"
 fi
 
 # --- billing tier -----------------------------------------------------------

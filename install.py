@@ -6,7 +6,7 @@ Run from the repo checkout:
     python3 install.py            # install (or update) into ~/.claude
     python3 install.py --dry-run  # show what would change, touch nothing
 
-It copies deepseek-cost.py and statusline.py into ~/.claude/ and merges two
+It copies deepseek-cost.py, statusline.py and updater.py into ~/.claude/ and merges two
 entries into ~/.claude/settings.json:
 
   - statusLine           the command Claude Code runs to draw the status line
@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 from datetime import datetime
@@ -43,7 +44,39 @@ from pathlib import Path
 # would append a duplicate on every install.
 _OURS = re.compile(r"deepseek-cost\.py|deepse~1\.py", re.IGNORECASE)
 
-SCRIPTS = ("deepseek-cost.py", "statusline.py")
+SCRIPTS = ("deepseek-cost.py", "statusline.py", "updater.py")
+
+
+def upgrade_launchers(home, py, dry_run=False):
+    """Add the updater only inside an existing, marked package wrapper."""
+    paths = [home / name for name in (".bashrc", ".bash_profile", ".zshrc")]
+    paths += [home / "Documents" / folder / name
+              for folder in ("PowerShell", "WindowsPowerShell")
+              for name in ("Microsoft.PowerShell_profile.ps1", "profile.ps1")]
+    for path in paths:
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8-sig")
+        pattern = r"(?ms)^# >>> dclaude wrapper >>>.*?^# <<< dclaude wrapper <<<"
+        match = re.search(pattern, text)
+        if not match or "updater.py" in match.group():
+            continue
+        block = match.group()
+        if path.suffix == ".ps1":
+            line = ("    $u = Join-Path $HOME '.claude\\updater.py'\n"
+                    f"    if (Test-Path $u) {{ & '{py}' $u @args }}\n")
+            updated = block.replace("function dclaude {\n", "function dclaude {\n" + line, 1)
+        else:
+            line = ('    if [ -f "$HOME/.claude/updater.py" ]; then\n'
+                    f'        {shlex.quote(py)} "$HOME/.claude/updater.py" "$@"\n'
+                    '    fi\n')
+            updated = block.replace("dclaude() {\n", "dclaude() {\n" + line, 1)
+        if updated == block:
+            continue
+        if not dry_run:
+            shutil.copy2(path, path.with_name(path.name + ".bak-" + datetime.now().strftime("%Y%m%d-%H%M%S")))
+            path.write_text(text[:match.start()] + updated + text[match.end():], encoding="utf-8")
+        print(f"{'dry-run: would add' if dry_run else 'ok: added'} update prompt to {path}")
 
 # The 1M-window DeepSeek IDs; Claude Code assumes 200K for IDs it does not
 # recognize and auto-compacts early. A name already ending in [1m] declares
@@ -349,6 +382,7 @@ def main():
         if ctx_added:
             shown = ", ".join(f"{key}={value}" for key, value in ctx_added.items())
             print(f"  {ctx_target}: would add {shown}")
+        upgrade_launchers(Path.home(), py, dry_run=True)
         return 0
 
     claude.mkdir(parents=True, exist_ok=True)
@@ -356,6 +390,9 @@ def main():
         shutil.copy2(here / name, claude / name)
         os.chmod(claude / name, 0o755)
         print(f"ok: installed {claude / name}")
+    (claude / "deepseek-install.json").write_text(
+        json.dumps({"repo": str(here)}), encoding="utf-8")
+    upgrade_launchers(Path.home(), py)
 
     changes = plan(settings, py)
     ctx_target, ctx_data, ctx_added = context_plan(settings, settings_path)

@@ -232,6 +232,8 @@ if (-not $DryRun -and ($env:Path -split ";") -notcontains $localBin) {
 $wrapperSnippet = @'
 # >>> dclaude wrapper >>>
 function dclaude {
+    $u = Join-Path $HOME '.claude\updater.py'
+    if (Test-Path $u) { & '__DCLAUDE_PY__' $u @args }
     $d = Join-Path $HOME '.config\claude-deepseek'
     $f = Join-Path $d 'key.env'
     $k = $null
@@ -255,6 +257,7 @@ function dclaude {
 }
 # <<< dclaude wrapper <<<
 '@
+$wrapperSnippet = $wrapperSnippet.Replace('__DCLAUDE_PY__', $(if ($py) { $py } else { 'python' }))
 
 # current host + all-hosts, and the sibling host's all-hosts file when it
 # exists (Windows PowerShell 5.1 and pwsh 7 keep separate profile folders)
@@ -303,6 +306,7 @@ $launcher = Join-Path $localBin "dclaude.cmd"
 $launcherText = (@'
 @echo off
 setlocal
+if exist "%USERPROFILE%\.claude\updater.py" "__DCLAUDE_PY__" "%USERPROFILE%\.claude\updater.py" %*
 set "KEY="
 set "KEYFILE=%USERPROFILE%\.config\claude-deepseek\key.env"
 if exist "%KEYFILE%" for /f "usebackq tokens=1,* delims==" %%A in ("%KEYFILE%") do if /i "%%A"=="DEEPSEEK_API_KEY" set "KEY=%%B"
@@ -313,6 +317,7 @@ set "CLAUDE_EXE=claude"
 where claude >nul 2>nul || set "CLAUDE_EXE=%USERPROFILE%\.local\bin\claude.exe"
 "%CLAUDE_EXE%" --settings "%USERPROFILE%\.config\claude-deepseek\settings.json" %*
 '@ -split "`r?`n") -join "`r`n"
+$launcherText = $launcherText.Replace('__DCLAUDE_PY__', $(if ($py) { $py } else { 'python' }))
 if ($DryRun) {
     Say "would write the dclaude launcher to $launcher"
 } elseif ((Test-Path $launcher) -and ((Get-Content -Raw $launcher).Trim() -eq $launcherText.Trim())) {

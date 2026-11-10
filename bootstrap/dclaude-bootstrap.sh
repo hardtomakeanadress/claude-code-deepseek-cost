@@ -184,6 +184,9 @@ esac
 
 WRAPPER_SNIPPET='# >>> dclaude wrapper >>>
 dclaude() {
+    if [ -f "$HOME/.claude/updater.py" ]; then
+        python3 "$HOME/.claude/updater.py" "$@"
+    fi
     local d="$HOME/.config/claude-deepseek"
     local k
     k=$(sed -n '"'"'s/^DEEPSEEK_API_KEY=//p'"'"' "$d/key.env" 2>/dev/null)

@@ -11,9 +11,9 @@ deepseek-cost.py - Claude Code's built-in number comes from an Anthropic
 rate card and reads far too high. Peak/off-peak is decided per request from
 its timestamp. It is an estimate, not a bill.
 
-"$X left" is the account balance from the last session start, cached by
-deepseek-cost.py. A redraw reads the cache and never touches the network,
-so the figure is a snapshot rather than a live balance.
+"$X left" is the API account balance, refreshed in the background whenever
+session spend changes and every minute while redrawing. Redraws read the
+cache without waiting for the network; an old balance is marked stale.
 
 The trailing marker is DeepSeek's billing tier right now: green ▽ cheap
 (off-peak, half price) or red ▲ peak, with the time left in that window.
@@ -81,7 +81,9 @@ def money_part(data, costs):
         tempfile.gettempdir(),
         "claude-deepseek-cost" + (f"-{sid}" if sid else "") + ".json")
     try:
-        return f" ${costs.session_cost(tpath, cache):.2f}"
+        spent = costs.session_cost(tpath, cache)
+        costs.request_balance_refresh(cache, spent)
+        return f" ${spent:.2f}"
     except Exception:                  # a statusline must never crash
         return ""
 
@@ -90,12 +92,12 @@ def balance_part(costs):
     if costs is None:
         return ""
     try:
-        cached = costs.read_balance_cache()
+        balance = costs.balance_text()
     except Exception:                  # a statusline must never crash
         return ""
-    if not cached:
+    if not balance:
         return ""
-    return f" · ${cached[0]:.2f} left"
+    return f" · {balance}"
 
 
 def elapsed_part(data):

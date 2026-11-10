@@ -17,7 +17,7 @@ internet once every two weeks (--check-online): DeepSeek's own pricing page,
 to see whether the rates or the peak-hours wording changed, the holiday
 mirrors, and the repo's version.txt; rates that changed are applied from
 the page automatically, and a newer release is reported so the copy can be
-updated (git pull && python3 install.py).  The statusline ends with the
+updated at the next interactive launch by pressing 1. The statusline ends with the
 version this copy carries.
 
     USD per 1M tokens, peak rates:
@@ -34,8 +34,9 @@ Notes on the accounting:
 
 The balance lookup reads $DEEPSEEK_API_KEY when set, otherwise the first
 line of ~/.config/claude-deepseek/key.env (everything after the first =).
-The last successful figure is cached in ~/.claude/deepseek-balance.json,
-which the statusline reads so a redraw never waits on the network.
+The last successful figure is cached in ~/.claude/deepseek-balance.json.
+The statusline refreshes it in the background whenever session spend changes
+and at least once a minute while redrawing, without waiting on the network.
 
     deepseek-cost.py --transcript t.jsonl [--transcript ...]   # USD on stdout
     deepseek-cost.py --transcript t.jsonl --report             # human table
@@ -53,6 +54,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -85,7 +87,7 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-VERSION = "1.4"     # what the statusline shows; bump with the repo's version.txt
+VERSION = "1.5"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday
@@ -282,7 +284,7 @@ def update_note():
         return ""                    # bounded whatever reaches int()
     if not newer:
         return ""
-    return f"⬆ v{latest} on GitHub - git pull && python3 install.py"
+    return f"⬆ v{latest} available - restart dclaude and press 1 to update"
 
 
 class HolidaySourceError(Exception):
@@ -1057,8 +1059,7 @@ def fetch_balance():
 def read_balance_cache():
     """(USD left, ISO timestamp) from the last successful lookup, or None.
 
-    The statusline calls this instead of the API: it runs on every redraw,
-    where even a fast round trip would be too slow.
+    Redraws read this while a separate process refreshes the API balance.
     """
     try:
         with open(BALANCE_FILE, encoding="utf-8") as handle:
@@ -1067,7 +1068,7 @@ def read_balance_cache():
         fetched = record.get("fetched_at")
         if isinstance(balance, (int, float)) and isinstance(fetched, str):
             return float(balance), fetched
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
     return None
 
@@ -1086,6 +1087,65 @@ def _write_balance_cache(balance):
             os.unlink(temporary)
         except OSError:
             pass
+
+
+def request_balance_refresh(cache, spent):
+    """Fetch after each spend change, or after 60s; never wait for the API.
+
+    A per-session lock prevents simultaneous redraws starting duplicate
+    requests. Failed lookups keep the last good balance and retry on the
+    next spend change, or after 60s even if the spend has not changed.
+    """
+    try:
+        with open(cache + ".balance-refresh", "a+b") as handle:
+            if os.fstat(handle.fileno()).st_size == 0:
+                handle.write(b" ")       # Windows needs a byte to lock
+                handle.flush()
+            try:
+                _lock_acquire(handle)
+            except OSError:
+                return
+            try:
+                handle.seek(0)
+                try:
+                    previous = json.load(handle)
+                except (ValueError, TypeError):
+                    previous = {}
+                now = time.time()
+                if (isinstance(previous, dict)
+                        and previous.get("spent") == spent
+                        and isinstance(previous.get("at"), (int, float))
+                        and 0 <= now - previous["at"] < 60):
+                    return
+                options = ({"creationflags": subprocess.DETACHED_PROCESS
+                            | subprocess.CREATE_NEW_PROCESS_GROUP}
+                           if os.name == "nt" else {"start_new_session": True})
+                subprocess.Popen(
+                    [sys.executable, os.path.abspath(__file__), "--refresh-balance"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, close_fds=True, **options)
+                handle.seek(0)
+                handle.truncate()
+                handle.write(json.dumps({"spent": spent, "at": now}).encode())
+                handle.flush()
+            finally:
+                _lock_release(handle)
+    except OSError:                      # the statusline must keep working
+        pass
+
+
+def balance_text():
+    """Cached API balance, visibly stale after two minutes without success."""
+    cached = read_balance_cache()
+    if not cached:
+        return ""
+    balance, fetched = cached
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(fetched)).total_seconds()
+    except (TypeError, ValueError):
+        age = float("inf")
+    stale = " (stale)" if age < 0 or age > 120 else ""
+    return f"${balance:.2f} left{stale}"
 
 
 def billing_model():
@@ -1199,6 +1259,10 @@ def main():
                         help="only print the current billing tier, e.g. '▽ cheap · 162h42m left'")
     parser.add_argument("--welcome", action="store_true",
                         help="print the SessionStart hook payload: balance, spend, tier")
+    parser.add_argument("--refresh-balance", action="store_true",
+                        help="refresh only the cached account balance")
+    parser.add_argument("--balance", action="store_true",
+                        help="print the cached balance for the statusline")
     parser.add_argument("--refresh-holidays", action="store_true",
                         help="re-fetch the holiday days (previous, current, "
                              "and next year) and rewrite the HOLIDAYS list "
@@ -1212,6 +1276,14 @@ def main():
     parser.add_argument("--version", action="store_true",
                         help="print the version this copy carries, e.g. v1.0")
     args = parser.parse_args()
+    if args.refresh_balance:
+        balance = fetch_balance()
+        if balance is not None:
+            _write_balance_cache(balance)
+        return
+    if args.balance:
+        print(balance_text())
+        return
     if args.refresh_holidays:
         raise SystemExit(refresh_holidays_command(dry_run=args.dry_run))
     if args.check_online:
@@ -1233,7 +1305,9 @@ def main():
         parser.error("at least one --transcript is required")
 
     if args.cache and len(args.transcript) == 1 and not args.report:
-        print(f"{session_cost(args.transcript[0], args.cache):.4f}")
+        spent = session_cost(args.transcript[0], args.cache)
+        request_balance_refresh(args.cache, spent)
+        print(f"{spent:.4f}")
         return
 
     out = report(args.transcript)
