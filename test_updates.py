@@ -142,5 +142,31 @@ class UpdaterTests(unittest.TestCase):
             self.assertTrue(once.endswith("after\n"))
 
 
+class StatusLineMatcherTests(unittest.TestCase):
+    """Older installs wrote the ~/.claude directory in 8.3 form as well."""
+
+    SHORT = r"C:\Users\me\CLAUDE~1\STATUS~1.PY"
+
+    def test_short_directory_spelling_counts_as_ours(self):
+        with patch.object(install, "_windows_short_path", return_value=self.SHORT):
+            self.assertTrue(install._ours_statusline(
+                "python C:/Users/me/CLAUDE~1/STATUS~1.PY"))
+            self.assertTrue(install._ours_statusline(
+                'python "C:/Users/me/CLAUDE~1/STATUS~1.PY"'))
+
+    def test_other_statuslines_stay_foreign(self):
+        with patch.object(install, "_windows_short_path", return_value=self.SHORT):
+            self.assertFalse(install._ours_statusline("python C:/tools/statusline.py"))
+            self.assertFalse(install._ours_statusline(
+                "python C:/Users/me/OTHER~1/STATUS~1.PY"))
+            self.assertFalse(install._ours_statusline(
+                "python C:/Users/me/.claude/other.py"))
+
+    def test_long_spelling_matches_when_no_short_name_exists(self):
+        with patch.object(install, "_windows_short_path", return_value=None):
+            self.assertTrue(install._ours_statusline(
+                "python C:/Users/me/.claude/statusline.py"))
+
+
 if __name__ == "__main__":
     unittest.main()

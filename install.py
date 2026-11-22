@@ -150,10 +150,19 @@ def _ours_statusline(command):
 
     Both spellings count: the long name, or the 8.3 form (STATUS~1.PY)
     Windows falls back to when the home path cannot survive quoting. The
-    .claude anchor keeps another tool's statusline.py out of it.
+    .claude anchor keeps another tool's statusline.py out of it. An older
+    installer shortened the directory too (CLAUDE~1/STATUS~1.PY), so when
+    the anchor is absent compare against this machine's actual short path
+    rather than guessing the spelling - every upgrade from that version
+    otherwise warned about a statusLine that was its own.
     """
     text = str(command).lower().replace("\\", "/")
-    return ".claude/" in text and ("statusline.py" in text or "status~1.py" in text)
+    if "statusline.py" not in text and "status~1.py" not in text:
+        return False
+    if ".claude/" in text:
+        return True
+    short = _windows_short_path(Path.home() / ".claude" / "statusline.py")
+    return bool(short) and short.lower().replace("\\", "/") in text
 
 
 def command_for(py, script, extra=()):
