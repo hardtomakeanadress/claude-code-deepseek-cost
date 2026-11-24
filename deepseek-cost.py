@@ -87,7 +87,7 @@ ALIASES = {  # retired names; traffic is served and billed as Flash
     "deepseek-v4-flash-vision-exp": "deepseek-flash",
 }
 
-VERSION = "1.5"     # what the statusline shows; bump with the repo's version.txt
+VERSION = "1.6"     # what the statusline shows; bump with the repo's version.txt
 
 # --- Chinese public holidays -------------------------------------------------
 # The days off DeepSeek bills off-peak: the State Council's yearly holiday
